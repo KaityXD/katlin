@@ -118,6 +118,20 @@ fn format_c_params(str p) -> str {
             pos += 1;
             continue;
         }
+        // Drop parameter defaults: C has no such thing, and every call site
+        // has already been given the full positional argument list.
+        if ch == 61 && (pos + 1 >= plen || str_char_at(p, pos + 1) != 61) { // '='
+            pos += 1;
+            mut dd := 0;
+            while pos < plen {
+                dc := str_char_at(p, pos);
+                if dc == 40 || dc == 91 { dd += 1; }
+                else if dc == 41 || dc == 93 { dd -= 1; }
+                else if dc == 44 && dd == 0 { break; } // ','
+                pos += 1;
+            }
+            continue;
+        }
         sb_append_char(param_buf, ch);
         pos += 1;
     }
@@ -395,6 +409,11 @@ fn transpile_source(str src, bool test_mode) -> str {
     // Lets `value.type` resolve without any runtime type information.
     mut str type_map = "|";
 
+    // Whether the function currently being emitted returns nothing. A postfix
+    // guard becomes `return;` in a void function and `return 0;` otherwise,
+    // which keeps the generated C valid in both cases.
+    mut cur_void := true;
+
     while pos < len {
         c := str_char_at(src, pos);
 
@@ -485,6 +504,7 @@ fn transpile_source(str src, bool test_mode) -> str {
                     in_main = true;
                     main_depth = 1;
                     ref_params = "|";
+                    cur_void = false; // main returns an int status
                     while pos < len && str_char_at(src, pos) != 123 { pos += 1; }
                     if pos < len && str_char_at(src, pos) == 123 { pos += 1; }
                     if test_mode {
@@ -530,6 +550,7 @@ fn transpile_source(str src, bool test_mode) -> str {
                 if pos < len && str_char_at(src, pos) == 123 { pos += 1; }
                 ref_params = extract_ref_params(params_str);
                 fn_depth = 1;
+                cur_void = str_eq(ret_type, "void");
 
                 sb_append(out_buf, "static ");
                 sb_append(out_buf, ret_type);
@@ -804,6 +825,36 @@ fn transpile_source(str src, bool test_mode) -> str {
             }
 
             if str_eq(word, "return") {
+                // Postfix guard clause: `return if cond;` -> `if (cond) return;`
+                // Without this the bare `if` fell through to the statement
+                // handler, which consumed the rest of the block -- including
+                // any `fn main` that followed.
+                mut g := pos;
+                while g < len && is_space(str_char_at(src, g)) { g += 1; }
+                if g + 2 <= len && str_eq(str_sub(src, g, 2), "if") {
+                    if g + 2 >= len || !is_alnum(str_char_at(src, g + 2)) {
+                        mut cs := g + 2;
+                        mut cd := 0;
+                        while cs < len {
+                            gc := str_char_at(src, cs);
+                            if gc == 40 || gc == 91 { cd += 1; }
+                            else if gc == 41 || gc == 93 { cd -= 1; }
+                            else if gc == 59 && cd == 0 { break; } // ';'
+                            cs += 1;
+                        }
+                        cond := trim_string(str_sub(src, g + 2, cs - (g + 2)));
+                        sb_append(out_buf, "if (");
+                        sb_append(out_buf, cond);
+                        if cur_void {
+                            sb_append(out_buf, ") return;");
+                        } else {
+                            sb_append(out_buf, ") return 0;");
+                        }
+                        pos = cs;
+                        if pos < len { pos += 1; }
+                        continue;
+                    }
+                }
                 if in_main {
                     mut look := pos;
                     while look < len && is_space(str_char_at(src, look)) { look += 1; }
@@ -1322,6 +1373,475 @@ fn check_borrows(str src, str path) -> int {
 }
 
 // -------------------------------------------------------------
+// Argument defaults and named arguments
+// -------------------------------------------------------------
+//
+// C has neither, and a character scanner cannot reorder arguments as it goes.
+// So this runs as a source-to-source pass *before* transpilation: call sites
+// are rewritten into fully positional form, and the transpiler then sees
+// ordinary calls.
+//
+//   fn greet(str name = "world", int times = 1)
+//   greet(times = 3)          ->  greet("world", 3)
+//   greet()                   ->  greet("world", 1)
+//
+// Signatures are collected first, then call sites are rewritten. Anything the
+// parser cannot read confidently (a default containing a comma, say) is left
+// untouched rather than guessed at, so the worst case is the old behaviour.
+
+// Split on commas that sit at nesting depth zero, into "|a|b|c" form.
+fn split_top_commas(str s) -> str {
+    mut str out = "|";
+    n := str_len(s);
+    mut depth := 0;
+    mut start := 0;
+    mut i := 0;
+    while i < n {
+        c := str_char_at(s, i);
+        if c == 34 { // string literal: skip it whole
+            i += 1;
+            while i < n {
+                sc := str_char_at(s, i);
+                if sc == 92 { i += 2; continue; }
+                if sc == 34 { i += 1; break; }
+                i += 1;
+            }
+            continue;
+        }
+        if c == 40 || c == 91 || c == 123 {
+            depth += 1;
+        } else if c == 41 || c == 93 || c == 125 {
+            depth -= 1;
+        } else if c == 44 && depth == 0 { // ','
+            out = str_concat(out, trim_string(str_sub(s, start, i - start)));
+            out = str_concat(out, "|");
+            start = i + 1;
+        }
+        i += 1;
+    }
+    tail := trim_string(str_sub(s, start, n - start));
+    if str_len(tail) > 0 {
+        out = str_concat(out, str_concat(tail, "|"));
+    }
+    return out;
+}
+
+// idx-th field of a "|a|b|" list, or "" when out of range.
+fn field_at(str list, int idx) -> str {
+    n := str_len(list);
+    mut i := 0;
+    mut f := 0;
+    while i < n {
+        if str_char_at(list, i) == 124 { // '|'
+            i += 1;
+            if f == idx {
+                s := i;
+                while i < n && str_char_at(list, i) != 124 { i += 1; }
+                return str_sub(list, s, i - s);
+            }
+            f += 1;
+            continue;
+        }
+        i += 1;
+    }
+    return "";
+}
+
+fn field_count(str list) -> int {
+    mut c := 0;
+    n := str_len(list);
+    mut i := 0;
+    while i < n {
+        if str_char_at(list, i) == 124 { c += 1; }
+        i += 1;
+    }
+    return c - 1;
+}
+
+// Last identifier in a parameter fragment: `int &timeout` -> "timeout".
+fn last_ident(str s) -> str {
+    mut str found = "";
+    n := str_len(s);
+    mut i := 0;
+    while i < n {
+        if is_alpha(str_char_at(s, i)) {
+            ws := i;
+            while i < n && is_alnum(str_char_at(s, i)) { i += 1; }
+            found = str_sub(s, ws, i - ws);
+            continue;
+        }
+        i += 1;
+    }
+    return found;
+}
+
+// Index of a top-level `=` that is a plain assignment (not ==, <=, >=, !=, :=).
+fn find_top_assign(str s) -> int {
+    n := str_len(s);
+    mut depth := 0;
+    mut i := 0;
+    while i < n {
+        c := str_char_at(s, i);
+        if c == 34 {
+            i += 1;
+            while i < n {
+                sc := str_char_at(s, i);
+                if sc == 92 { i += 2; continue; }
+                if sc == 34 { i += 1; break; }
+                i += 1;
+            }
+            continue;
+        }
+        if c == 40 || c == 91 || c == 123 {
+            depth += 1;
+        } else if c == 41 || c == 93 || c == 125 {
+            depth -= 1;
+        } else if c == 61 && depth == 0 {
+            prev := 0;
+            if i > 0 { prev = str_char_at(s, i - 1); }
+            next := 0;
+            if i + 1 < n { next = str_char_at(s, i + 1); }
+            // reject ==, <=, >=, !=, :=
+            if next != 61 && prev != 60 && prev != 62 && prev != 33 && prev != 58 {
+                return i;
+            }
+        }
+        i += 1;
+    }
+    return -1;
+}
+
+// Build "name#p1,p2#d1,d2" for one function, or "" when unparseable.
+fn build_signature(str fname, str params) -> str {
+    parts := split_top_commas(params);
+    np := field_count(parts);
+    if np <= 0 {
+        return "";
+    }
+    mut str names = "";
+    mut str defs = "";
+    mut i := 0;
+    while i < np {
+        frag := trim_string(field_at(parts, i));
+        if str_len(frag) == 0 {
+            return "";
+        }
+        eq := find_top_assign(frag);
+        mut str pname = "";
+        mut str pdef = "";
+        if eq >= 0 {
+            pname = last_ident(str_sub(frag, 0, eq));
+            pdef = trim_string(str_sub(frag, eq + 1, str_len(frag) - (eq + 1)));
+        } else {
+            pname = last_ident(frag);
+        }
+        if str_len(pname) == 0 {
+            return "";
+        }
+        // A default containing a comma would not survive the encoding below.
+        if str_contains(pdef, ",") || str_contains(pdef, "|") || str_contains(pdef, "#") {
+            return "";
+        }
+        if i > 0 {
+            names = str_concat(names, ",");
+            defs = str_concat(defs, ",");
+        }
+        names = str_concat(names, pname);
+        defs = str_concat(defs, pdef);
+        i += 1;
+    }
+    return str_concat(fname, str_concat("#", str_concat(names, str_concat("#", str_concat(defs, "|")))));
+}
+
+fn collect_signatures(str src) -> str {
+    mut str sigs = "|";
+    n := str_len(src);
+    mut i := 0;
+    while i < n {
+        c := str_char_at(src, i);
+        if c == 34 {
+            i += 1;
+            while i < n {
+                sc := str_char_at(src, i);
+                if sc == 92 { i += 2; continue; }
+                if sc == 34 { i += 1; break; }
+                i += 1;
+            }
+            continue;
+        }
+        if c == 47 && i + 1 < n && str_char_at(src, i + 1) == 47 {
+            while i < n && str_char_at(src, i) != 10 { i += 1; }
+            continue;
+        }
+        if is_alpha(c) {
+            ws := i;
+            while i < n && is_alnum(str_char_at(src, i)) { i += 1; }
+            w := str_sub(src, ws, i - ws);
+            if str_eq(w, "fn") {
+                while i < n && is_space(str_char_at(src, i)) { i += 1; }
+                ns := i;
+                while i < n && is_alnum(str_char_at(src, i)) { i += 1; }
+                fname := str_sub(src, ns, i - ns);
+                while i < n && is_space(str_char_at(src, i)) { i += 1; }
+                if i < n && str_char_at(src, i) == 40 { // '('
+                    ps := i + 1;
+                    mut d := 1;
+                    i += 1;
+                    while i < n && d > 0 {
+                        ch := str_char_at(src, i);
+                        if ch == 40 { d += 1; }
+                        else if ch == 41 { d -= 1; if d == 0 { break; } }
+                        i += 1;
+                    }
+                    params := str_sub(src, ps, i - ps);
+                    if i < n { i += 1; }
+                    if str_len(fname) > 0 && !str_eq(fname, "main") {
+                        entry := build_signature(fname, params);
+                        if str_len(entry) > 0 {
+                            sigs = str_concat(sigs, entry);
+                        }
+                    }
+                }
+                continue;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    return sigs;
+}
+
+fn signature_for(str sigs, str name) -> str {
+    prefix := str_concat("|", str_concat(name, "#"));
+    idx := str_index_of(sigs, prefix, 0);
+    if idx < 0 {
+        return "";
+    }
+    start := idx + 1;
+    n := str_len(sigs);
+    mut j := start;
+    while j < n && str_char_at(sigs, j) != 124 { j += 1; }
+    return str_sub(sigs, start, j - start);
+}
+
+// Replace field idx of a "|a|b|" list, returning a new list.
+fn set_field(str list, int idx, str value) -> str {
+    out := sb_create(str_len(list) + str_len(value) + 8);
+    n := str_len(list);
+    mut f := 0;
+    mut i := 0;
+    while i < n {
+        if str_char_at(list, i) == 124 { // '|'
+            sb_append_char(out, 124);
+            if f == idx {
+                sb_append(out, value);
+            } else {
+                s := i + 1;
+                mut j := s;
+                while j < n && str_char_at(list, j) != 124 { j += 1; }
+                if j > s {
+                    sb_append(out, str_sub(list, s, j - s));
+                }
+            }
+            f += 1;
+        }
+        i += 1;
+    }
+    return sb_build(out);
+}
+
+// Rewrite one call's argument list into fully positional form.
+// Returns "" when the call needs no change or cannot be handled safely.
+fn positional_args(str sig, str args_text) -> str {
+    h1 := str_index_of(sig, "#", 0);
+    if h1 < 0 { return ""; }
+    h2 := str_index_of(sig, "#", h1 + 1);
+    if h2 < 0 { return ""; }
+    names := str_sub(sig, h1 + 1, h2 - h1 - 1);
+    defs := str_sub(sig, h2 + 1, str_len(sig) - h2 - 1);
+
+    name_list := split_top_commas(names);
+    def_list := split_top_commas(defs);
+    np := field_count(name_list);
+
+    given := split_top_commas(args_text);
+    na := field_count(given);
+    // A zero-argument call is legitimate here: every parameter may have a
+    // default, in which case the loop below fills all of them in.
+    if np <= 0 {
+        return "";
+    }
+
+    // vals starts as a list of np empty fields: "|" followed by np pipes.
+    mut str vals = "|";
+    mut i := 0;
+    while i < np {
+        vals = str_concat(vals, "|");
+        i += 1;
+    }
+
+    mut any_named := false;
+    i = 0;
+    while i < na {
+        a := trim_string(field_at(given, i));
+        eq := find_top_assign(a);
+        mut placed := false;
+        if eq >= 0 {
+            lhs := trim_string(str_sub(a, 0, eq));
+            if str_len(lhs) > 0 && is_alpha(str_char_at(lhs, 0)) && !str_contains(lhs, " ") {
+                mut k := 0;
+                while k < np {
+                    if str_eq(field_at(name_list, k), lhs) {
+                        val := trim_string(str_sub(a, eq + 1, str_len(a) - (eq + 1)));
+                        vals = set_field(vals, k, val);
+                        any_named = true;
+                        placed = true;
+                        break;
+                    }
+                    k += 1;
+                }
+            }
+        }
+        if !placed {
+            if any_named {
+                return ""; // positional after named is ambiguous
+            }
+            vals = set_field(vals, i, a);
+        }
+        i += 1;
+    }
+
+    // Fill anything not supplied from the parameter default.
+    mut result := sb_create(str_len(args_text) + 64);
+    i = 0;
+    while i < np {
+        v := field_at(vals, i);
+        if str_len(v) == 0 {
+            d := trim_string(field_at(def_list, i));
+            if str_len(d) == 0 {
+                return ""; // a required parameter is missing; leave it alone
+            }
+            v = d;
+        }
+        if i > 0 {
+            sb_append(result, ", ");
+        }
+        sb_append(result, v);
+        i += 1;
+    }
+    return sb_build(result);
+}
+
+fn rewrite_call_args(str src) -> str {
+    sigs := collect_signatures(src);
+    if str_len(sigs) <= 1 {
+        return src;
+    }
+
+    out := sb_create(str_len(src) + 256);
+    n := str_len(src);
+    mut i := 0;
+    mut after_fn := false;
+
+    while i < n {
+        c := str_char_at(src, i);
+
+        // Copy strings, comments and pragmas through untouched.
+        if c == 34 {
+            sb_append_char(out, c);
+            i += 1;
+            while i < n {
+                sc := str_char_at(src, i);
+                if sc == 92 && i + 1 < n {
+                    sb_append_char(out, sc);
+                    sb_append_char(out, str_char_at(src, i + 1));
+                    i += 2;
+                    continue;
+                }
+                sb_append_char(out, sc);
+                i += 1;
+                if sc == 34 { break; }
+            }
+            continue;
+        }
+        if c == 47 && i + 1 < n && (str_char_at(src, i + 1) == 47 || str_char_at(src, i + 1) == 42) {
+            sb_append_char(out, c);
+            i += 1;
+            continue;
+        }
+
+        if is_alpha(c) {
+            ws := i;
+            while i < n && is_alnum(str_char_at(src, i)) { i += 1; }
+            w := str_sub(src, ws, i - ws);
+
+            if str_eq(w, "fn") {
+                after_fn = true;
+                sb_append(out, w);
+                continue;
+            }
+
+            // whitespace between the callee name and '('
+            mut j := i;
+            while j < n && is_space(str_char_at(src, j)) { j += 1; }
+
+            if j < n && str_char_at(src, j) == 40 && !after_fn {
+                sig := signature_for(sigs, w);
+                if str_len(sig) > 0 {
+                    // find the matching ')'
+                    mut d := 1;
+                    mut k := j + 1;
+                    while k < n && d > 0 {
+                        ch := str_char_at(src, k);
+                        if ch == 34 {
+                            k += 1;
+                            while k < n {
+                                if str_char_at(src, k) == 92 { k += 2; continue; }
+                                if str_char_at(src, k) == 34 { k += 1; break; }
+                                k += 1;
+                            }
+                            continue;
+                        }
+                        if ch == 40 { d += 1; }
+                        else if ch == 41 { d -= 1; if d == 0 { break; } }
+                        k += 1;
+                    }
+                    if k < n {
+                        args_text := str_sub(src, j + 1, k - j - 1);
+                        new_args := positional_args(sig, args_text);
+                        if str_len(new_args) > 0 {
+                            sb_append(out, w);
+                            if j > i {
+                                sb_append(out, str_sub(src, i, j - i));
+                            }
+                            sb_append(out, "(");
+                            sb_append(out, new_args);
+                            sb_append(out, ")");
+                            i = k + 1;
+                            after_fn = false;
+                            continue;
+                        }
+                    }
+                }
+            }
+            after_fn = false;
+            sb_append(out, w);
+            continue;
+        }
+
+        if c != 32 && c != 9 && c != 13 && c != 10 {
+            if c == 40 && after_fn {
+                // parameter list of a definition: not a call
+            }
+            after_fn = false;
+        }
+        sb_append_char(out, c);
+        i += 1;
+    }
+    return sb_build(out);
+}
+
+// -------------------------------------------------------------
 // Compilation Pipeline Execution
 // -------------------------------------------------------------
 
@@ -1413,12 +1933,16 @@ fn compile_file(str src_path, str out_binary, bool optimize, bool run_after, str
     c_path := str_concat(".build/", str_concat(base_name, ".c"));
 
     // Reject aliased mutable borrows before doing any code generation.
-    // No-op unless the file opts in with a `#strict` pragma.
+    // No-op unless the file opts in with a `#strict` pragma. Checked against
+    // the original text so line numbers match what the user wrote.
     if check_borrows(src_content, src_path) > 0 {
         return 1;
     }
 
-    raw_c := transpile_source(src_content, false);
+    // Rewrite named arguments / fill parameter defaults before transpiling.
+    src_rewritten := rewrite_call_args(src_content);
+
+    raw_c := transpile_source(src_rewritten, false);
 
     // A file with only `test` blocks has no entry point in a normal build.
     // Say so plainly instead of letting the linker report a missing `main`.
@@ -1650,7 +2174,7 @@ fn run_test_file(str path) -> int {
         return -1;
     }
 
-    c_code := transpile_source(src, true);
+    c_code := transpile_source(rewrite_call_args(src), true);
     if !str_contains(c_code, "ktl_test_0") {
         return -1;
     }

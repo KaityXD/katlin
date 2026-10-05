@@ -1,0 +1,46 @@
+// examples/arguments.ktl
+// Named arguments, parameter defaults, and postfix guard clauses.
+//
+// Run it:  katlin run examples/arguments.ktl
+
+// Defaults may be used by any trailing parameter.
+fn greet(str name = "world", int times = 1) {
+    mut int i = 0;
+    while i < times {
+        println("hello, %", name);
+        i += 1;
+    }
+}
+
+fn box(int width = 1, int height = 1, int depth = 1) -> int {
+    return width * height * depth;
+}
+
+// A postfix guard: returns early when the condition holds.
+fn withdraw(int balance, int amount) -> int {
+    return if amount > balance;
+    return balance - amount;
+}
+
+fn main {
+    println("=== arguments ===");
+
+    // Every combination: all defaults, some positional, some named.
+    greet();
+    greet("katlin");
+    greet(times = 2);
+    greet(name = "reordered", times = 1);
+
+    // Named arguments may appear in any order.
+    println("box()              = %", box());
+    println("box(2)             = %", box(2));
+    println("box(depth = 3)     = %", box(depth = 3));
+    println("box(2, height = 3) = %", box(2, height = 3));
+    println("box(depth=2,width=3,height=4) = %", box(depth = 2, width = 3, height = 4));
+
+    // Guard clauses.
+    println("withdraw(100, 30)  = %", withdraw(100, 30));
+    println("withdraw(100, 500) = %", withdraw(100, 500));
+
+    println("=== done ===");
+}

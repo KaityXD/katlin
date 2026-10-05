@@ -197,6 +197,38 @@ fi
 
 # --------------------------------------------------------------------------
 echo
+echo "arguments and guards"
+# --------------------------------------------------------------------------
+cat > "$WORK/args.ktl" <<'KTL'
+fn box(int width = 1, int height = 1, int depth = 1) -> int {
+    return width * height * depth;
+}
+fn guard(int total) {
+    return if total > 100;
+    println("under");
+}
+fn main {
+    println("d=%", box());
+    println("d=%", box(2));
+    println("d=%", box(depth = 3));
+    println("d=%", box(2, height = 3));
+    println("d=%", box(depth = 2, width = 3, height = 4));
+    guard(50);
+    guard(150);
+}
+KTL
+out="$("$KATLIN" run "$WORK/args.ktl" 2>&1 | strip)"; code=$?
+check_eq "default and named arguments run" "0" "$code"
+check_contains "all-defaults call"       "d=1"  "$out"
+check_contains "one positional argument" "d=2"  "$out"
+check_contains "named argument only"     "d=3"  "$out"
+check_contains "positional then named"   "d=6"  "$out"
+check_contains "named in any order"      "d=24" "$out"
+check_contains "guard lets the body run" "under" "$out"
+check_eq "guard fires only when true" "1" "$(printf '%s' "$out" | grep -c '^under$')"
+
+# --------------------------------------------------------------------------
+echo
 echo "toolchain"
 # --------------------------------------------------------------------------
 # check: type-checks without producing a binary
