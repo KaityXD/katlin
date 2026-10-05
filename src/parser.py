@@ -244,6 +244,55 @@ class Parser:
 
         return Parameter(name=name, type_name=type_name, default_value=default_val, is_ref=is_ref, line=tok.line, col=tok.col)
 
+    def check_is_assignment(self) -> bool:
+        i = self.pos
+        if i >= len(self.tokens) or self.tokens[i].type != TokenType.IDENT:
+            return False
+        i += 1
+        while i < len(self.tokens):
+            if self.tokens[i].type == TokenType.DOT:
+                i += 1
+                if i < len(self.tokens) and self.tokens[i].type == TokenType.IDENT:
+                    i += 1
+                    continue
+                return False
+            elif self.tokens[i].type == TokenType.LBRACKET:
+                bracket_depth = 1
+                i += 1
+                while bracket_depth > 0 and i < len(self.tokens):
+                    if self.tokens[i].type == TokenType.LBRACKET:
+                        bracket_depth += 1
+                    elif self.tokens[i].type == TokenType.RBRACKET:
+                        bracket_depth -= 1
+                    i += 1
+                continue
+            else:
+                break
+        
+        if i < len(self.tokens) and self.tokens[i].type in (
+            TokenType.ASSIGN, TokenType.PLUS_ASSIGN, TokenType.MINUS_ASSIGN,
+            TokenType.STAR_ASSIGN, TokenType.SLASH_ASSIGN
+        ):
+            return True
+        return False
+
+    def parse_primary_target(self) -> ASTNode:
+        tok = self.peek()
+        name = self.consume(TokenType.IDENT).value
+        node: ASTNode = Identifier(name=name, line=tok.line, col=tok.col)
+        
+        while self.peek().type in (TokenType.DOT, TokenType.LBRACKET):
+            if self.match(TokenType.DOT):
+                m_tok = self.peek()
+                m_name = self.consume(TokenType.IDENT, "Expected member name after '.'").value
+                node = MemberAccess(target=node, member=m_name, line=m_tok.line, col=m_tok.col)
+            elif self.match(TokenType.LBRACKET):
+                idx = self.parse_expression()
+                self.consume(TokenType.RBRACKET)
+                node = IndexExpr(target=node, index=idx, line=tok.line, col=tok.col)
+        
+        return node
+
     def parse_statement(self) -> Optional[ASTNode]:
         tok = self.peek()
 
@@ -456,25 +505,14 @@ class Parser:
             self.skip_semicolons()
             return VarDecl(name=var_name, type_name=None, value=val, is_mutable=False, is_inferred=True, line=tok.line, col=tok.col)
 
-        # Index assignment: buffer[i] = val;
-        if tok.type == TokenType.IDENT and self.peek(1).type == TokenType.LBRACKET:
-            target_name = self.advance().value
-            self.advance() # [
-            idx_node = self.parse_expression()
-            self.consume(TokenType.RBRACKET)
-            if self.peek().type in (TokenType.ASSIGN, TokenType.PLUS_ASSIGN, TokenType.MINUS_ASSIGN, TokenType.STAR_ASSIGN, TokenType.SLASH_ASSIGN):
-                op = self.advance().value
-                val = self.parse_expression()
-                self.skip_semicolons()
-                return IndexAssign(target=target_name, index=idx_node, op=op, value=val, line=tok.line, col=tok.col)
-
-        # Reassignments: counter += 5; x = 10;
-        if tok.type == TokenType.IDENT and self.peek(1).type in (TokenType.ASSIGN, TokenType.PLUS_ASSIGN, TokenType.MINUS_ASSIGN, TokenType.STAR_ASSIGN, TokenType.SLASH_ASSIGN):
-            var_name = self.advance().value
+        # Assignments (variables, member access, index access):
+        # e.g. x = 10; from.balance -= amount; buffer[i] = val;
+        if self.check_is_assignment():
+            target_node = self.parse_primary_target()
             op = self.advance().value
             val = self.parse_expression()
             self.skip_semicolons()
-            return AssignStmt(target=var_name, op=op, value=val, line=tok.line, col=tok.col)
+            return AssignStmt(target=target_node, op=op, value=val, line=tok.line, col=tok.col)
 
         # General Expression or Chained Call
         expr = self.parse_expression()
@@ -608,7 +646,8 @@ class Parser:
                 fields = []
                 while self.peek().type != TokenType.RBRACE and self.peek().type != TokenType.EOF:
                     f_name = self.consume(TokenType.IDENT, "Expected field name in struct init").value
-                    self.consume(TokenType.ASSIGN)
+                    if not (self.match(TokenType.ASSIGN) or self.match(TokenType.COLON)):
+                        raise KatlinParseError("expected '=' or ':' after field name in struct init", self.peek().line, self.peek().col)
                     f_val = self.parse_expression()
                     fields.append((f_name, f_val))
                     self.match(TokenType.COMMA)
