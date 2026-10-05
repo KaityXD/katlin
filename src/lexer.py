@@ -3,6 +3,7 @@
 
 import sys
 from typing import List, Optional
+from src.diagnostics import KatlinLexerError
 
 class TokenType:
     # Special
@@ -210,7 +211,7 @@ class Lexer:
                     tokens.append(Token(TokenType.PRAGMA_STRICT, "#strict", start_line, start_col))
                     continue
                 else:
-                    raise SyntaxError(f"Unknown pragma #{ident} at L{start_line}:C{start_col}")
+                    raise KatlinLexerError(f"unknown pragma '#{ident}'", start_line, start_col, len(ident) + 1, help_text="supported pragmas include '#strict'")
 
             # String literal
             if ch == '"':
@@ -230,7 +231,7 @@ class Lexer:
                 if self.peek() == '"':
                     self.advance()
                 else:
-                    raise SyntaxError(f"Unterminated string literal at L{start_line}:C{start_col}")
+                    raise KatlinLexerError("unterminated string literal", start_line, start_col, max(1, len(s_val) + 1), help_text="string literals must be closed with a matching double-quote '\"'")
                 tokens.append(Token(TokenType.STR_LIT, s_val, start_line, start_col))
                 continue
 
@@ -358,7 +359,7 @@ class Lexer:
             elif ch == "]":
                 tokens.append(Token(TokenType.RBRACKET, "]", start_line, start_col))
             else:
-                raise SyntaxError(f"Unexpected character '{ch}' at L{start_line}:C{start_col}")
+                raise KatlinLexerError(f"unexpected character '{ch}'", start_line, start_col, 1, help_text="valid Katlin tokens include keywords, identifiers, numbers, strings, and operators")
 
         tokens.append(Token(TokenType.EOF, "", self.line, self.col))
         return tokens

@@ -116,5 +116,36 @@ class TestEndToEndExecution(unittest.TestCase):
         exit_code = compile_katlin(sample, run_after=False, optimize=True)
         self.assertEqual(exit_code, 0)
 
+class TestDiagnostics(unittest.TestCase):
+    def test_lexer_error_diagnostic(self):
+        from src.diagnostics import KatlinLexerError, render_diagnostic
+        code = 'fn main {\n    msg := "unclosed string\n}'
+        err = KatlinLexerError("unterminated string literal", line=2, col=12, length=15, help_text='close string with "')
+        diag = render_diagnostic("main.ktl", code, err)
+        self.assertIn("unterminated string literal", diag)
+        self.assertIn("main.ktl:2:12", diag)
+        self.assertIn("^", diag)
+        self.assertIn("help", diag)
+
+    def test_borrow_error_diagnostic(self):
+        from src.diagnostics import KatlinSemanticError, render_diagnostic
+        code = '#strict\nfn main {\n    mut int x = 10;\n    swap(&x, &x);\n}'
+        err = KatlinSemanticError(
+            "cannot borrow `x` as mutable more than once simultaneously",
+            line=4,
+            col=14,
+            length=2,
+            note="in #strict mode, aliasing mutable references is forbidden",
+            help_text="pass separate variables",
+            secondary_spans=[(4, 10, 2, "first mutable borrow occurs here")]
+        )
+        diag = render_diagnostic("main.ktl", code, err)
+        self.assertIn("cannot borrow `x`", diag)
+        self.assertIn("main.ktl:4:14", diag)
+        self.assertIn("first mutable borrow occurs here", diag)
+        self.assertIn("second mutable borrow occurs here", diag)
+        self.assertIn("note", diag)
+        self.assertIn("help", diag)
+
 if __name__ == "__main__":
     unittest.main()

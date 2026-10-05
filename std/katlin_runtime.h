@@ -58,14 +58,14 @@ static inline void ktl_free_ints(int32_t* ptr) {
 
 // Panic helper
 static inline void ktl_panic(const char* msg) {
-    fprintf(stderr, "\n[KATLIN PANIC]: %s\n", msg);
+    fprintf(stderr, "\n\033[1;31mpanic\033[0m: \033[1;37m%s\033[0m\n\n", msg);
     exit(1);
 }
 
 // Assert helper
 static inline void ktl_assert(bool cond, const char* msg) {
     if (!cond) {
-        fprintf(stderr, "\n[ASSERTION FAILED]: %s\n", msg);
+        fprintf(stderr, "\n\033[1;31massertion failed\033[0m: \033[1;37m%s\033[0m\n\n", msg);
         exit(1);
     }
 }

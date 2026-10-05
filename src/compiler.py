@@ -12,6 +12,7 @@ from src.parser import Parser
 from src.semantics import SemanticAnalyzer, SemanticError
 from src.codegen import CodeGenerator
 from src.formatter import format_katlin_code
+from src.diagnostics import KatlinError, render_diagnostic, render_backend_error
 
 VERSION = "0.1.0"
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -48,11 +49,12 @@ def compile_katlin(
         # Step 4: Code Generation
         c_code = CodeGenerator(ast, test_mode=test_mode).generate()
 
-    except SemanticError as se:
-        print(f"\n{se}", file=sys.stderr)
+    except KatlinError as ke:
+        print(render_diagnostic(source_path, source_code, ke), file=sys.stderr)
         return 1
-    except (SyntaxError, Exception) as e:
-        print(f"\n[Katlin Compilation Error]: {e}", file=sys.stderr)
+    except Exception as e:
+        err = KatlinError(str(e))
+        print(render_diagnostic(source_path, source_code, err), file=sys.stderr)
         return 1
 
     # Step 5: Write intermediate C code
@@ -92,7 +94,7 @@ def compile_katlin(
 
     res = subprocess.run(compile_args, capture_output=True, text=True)
     if res.returncode != 0:
-        print(f"[Backend C Compiler Error]:\n{res.stderr}", file=sys.stderr)
+        print(render_backend_error(res.stderr, source_path, source_code), file=sys.stderr)
         return res.returncode
 
     # Step 8: Run if requested

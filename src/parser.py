@@ -3,6 +3,7 @@
 
 from typing import List, Optional, Tuple, Any
 from src.lexer import Token, TokenType
+from src.diagnostics import KatlinParseError
 from src.ast_nodes import (
     Program, FunctionDef, Parameter, VarDecl, AssignStmt, ReturnStmt,
     PrintStmt, CallExpr, ChainedCall, IfStmt, WhileStmt, LoopStmt, ForStmt,
@@ -37,8 +38,29 @@ class Parser:
         tok = self.peek()
         if tok.type == expected_type:
             return self.advance()
-        err_msg = msg or f"Expected {expected_type}, got {tok.type} ('{tok.value}')"
-        raise SyntaxError(f"Parse error at L{tok.line}:C{tok.col}: {err_msg}")
+        
+        token_len = max(1, len(str(tok.value))) if tok.value else 1
+        err_msg = msg or f"expected '{expected_type}', found '{tok.value or tok.type}'"
+        
+        help_t = None
+        if expected_type == TokenType.RBRACE:
+            help_t = "add a closing '}' to balance the opening brace"
+        elif expected_type == TokenType.RPAREN:
+            help_t = "add a closing ')' to balance the opening parenthesis"
+        elif expected_type == TokenType.IDENT:
+            help_t = "provide an identifier name (e.g. variable, parameter, or function name)"
+        elif expected_type == TokenType.ASSIGN:
+            help_t = "use '=' to assign a value"
+        elif expected_type == TokenType.LBRACE:
+            help_t = "open a code block with '{'"
+        
+        raise KatlinParseError(
+            err_msg,
+            line=tok.line,
+            col=tok.col,
+            length=token_len,
+            help_text=help_t
+        )
 
     def skip_semicolons(self):
         while self.peek().type == TokenType.SEMICOLON:
@@ -608,7 +630,14 @@ class Parser:
 
             return node
 
-        raise SyntaxError(f"Unexpected token {tok.type} ('{tok.value}') at L{tok.line}:C{tok.col}")
+        token_len = max(1, len(str(tok.value))) if tok.value else 1
+        raise KatlinParseError(
+            f"unexpected token '{tok.value or tok.type}'",
+            line=tok.line,
+            col=tok.col,
+            length=token_len,
+            help_text="expected an expression, variable, or literal value"
+        )
 
     def parse_call_args(self) -> Tuple[List[ASTNode], List[Tuple[str, ASTNode]]]:
         self.consume(TokenType.LPAREN)

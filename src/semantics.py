@@ -9,7 +9,9 @@ from src.ast_nodes import (
     StructField, StructDef, StructInit, MemberAccess, EnumDef, OrExpr, MatchBranch, MatchStmt, TestBlock, ASTNode
 )
 
-class SemanticError(Exception):
+from src.diagnostics import KatlinSemanticError
+
+class SemanticError(KatlinSemanticError):
     pass
 
 class Scope:
@@ -157,7 +159,7 @@ class SemanticAnalyzer:
 
     def check_borrow_aliasing(self, call: CallExpr):
         # In strict mode: verify no two arguments borrow the same variable as mutable simultaneously
-        borrowed_mutables: Set[str] = set()
+        borrowed_mutables: Dict[str, Tuple[int, int, int]] = {} # var_name -> (line, col, len)
         target_func = self.functions.get(call.callee)
 
         if target_func:
@@ -166,15 +168,26 @@ class SemanticAnalyzer:
                     param = target_func.params[i]
                     if param.is_ref:
                         var_name = None
+                        arg_line = arg.line
+                        arg_col = arg.col
+                        arg_len = 1
                         if isinstance(arg, Identifier):
                             var_name = arg.name
+                            arg_len = len(var_name)
                         elif isinstance(arg, UnaryOp) and arg.op == "&" and isinstance(arg.operand, Identifier):
                             var_name = arg.operand.name
+                            arg_len = len(var_name) + 1
                         
                         if var_name:
                             if var_name in borrowed_mutables:
+                                first_line, first_col, first_len = borrowed_mutables[var_name]
                                 raise SemanticError(
-                                    f"[Katlin Strict Borrow Error at L{call.line}:C{call.col}]: "
-                                    f"Cannot borrow '{var_name}' as mutable more than once simultaneously in call to '{call.callee}'!"
+                                    f"cannot borrow `{var_name}` as mutable more than once simultaneously in call to `{call.callee}`",
+                                    line=arg_line if arg_line else call.line,
+                                    col=arg_col if arg_col else call.col,
+                                    length=arg_len,
+                                    note="in #strict mode, aliased mutable references (&) are forbidden to prevent data races",
+                                    help_text="pass separate variables or remove one of the mutable borrows",
+                                    secondary_spans=[(first_line, first_col, first_len, "first mutable borrow occurs here")]
                                 )
-                            borrowed_mutables.add(var_name)
+                            borrowed_mutables[var_name] = (arg_line, arg_col, arg_len)
