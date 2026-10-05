@@ -281,6 +281,27 @@ if [ -x "$WORK/tour" ]; then
     check_contains "tour example runs correctly" "swapped: 2 1" "$out"
 fi
 
+# Raw pointers: *mut T / *const T, pointer arithmetic, raw { } blocks.
+cat > "$WORK/rawptr.ktl" <<'KTL'
+fn copy_bytes(*mut byte dst, *const byte src, usize n) {
+    raw {
+        mut usize i = 0;
+        while i < n { *(dst + i) = *(src + i); i += 1; }
+    }
+}
+fn main {
+    mut byte a[4];
+    mut byte b[4];
+    mut usize i = 0;
+    while i < 4 { *(a + i) = i + 1; i += 1; }
+    copy_bytes(&b[0], &a[0], 4);
+    println("copied: % % % %", b[0], b[1], b[2], b[3]);
+}
+KTL
+out="$("$KATLIN" run "$WORK/rawptr.ktl" 2>&1 | strip)"; code=$?
+check_eq "raw pointer program compiles and runs" "0" "$code"
+check_contains "pointer arithmetic copies bytes" "copied: 1 2 3 4" "$out"
+
 # --------------------------------------------------------------------------
 echo
 printf '==> %d passed, %d failed\n' "$PASS" "$FAIL"

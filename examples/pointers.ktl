@@ -1,0 +1,63 @@
+// examples/pointers.ktl
+// The bare-metal memory dial: raw pointers, pointer arithmetic and `raw`
+// blocks, all of which now compile to real C pointer operations.
+//
+// Run it:  katlin run examples/pointers.ktl
+
+// `*mut T` becomes T*, `*const T` becomes const T*.
+// `usize` is size_t, `byte` is uint8_t.
+fn fast_memcpy(*mut byte dest, *const byte src, usize count) {
+    raw {
+        mut usize i = 0;
+        while i < count {
+            *(dest + i) = *(src + i);
+            i += 1;
+        }
+    }
+}
+
+fn fill(*mut byte buf, usize count, byte value) {
+    raw {
+        mut usize i = 0;
+        while i < count {
+            *(buf + i) = value;
+            i += 1;
+        }
+    }
+}
+
+fn checksum(*const byte buf, usize count) -> int {
+    mut int total = 0;
+    mut usize i = 0;
+    while i < count {
+        total += *(buf + i);
+        i += 1;
+    }
+    return total;
+}
+
+fn main {
+    println("=== raw pointers ===");
+
+    mut byte src[8];
+    mut byte dst[8];
+
+    // Write 1..8 into the source buffer one byte at a time.
+    mut usize i = 0;
+    while i < 8 {
+        *(src + i) = i + 1;
+        i += 1;
+    }
+    println("src checksum: %", checksum(&src[0], 8));
+
+    // Copy, then verify the copy independently.
+    fast_memcpy(&dst[0], &src[0], 8);
+    println("dst checksum: %", checksum(&dst[0], 8));
+
+    // Bulk fill, then read back a couple of values.
+    fill(&dst[0], 4, 9);
+    println("after fill:   % % % %", *(dst + 0), *(dst + 1), *(dst + 2), *(dst + 3));
+    println("tail intact:  % %", *(dst + 4), *(dst + 7));
+
+    println("=== done ===");
+}

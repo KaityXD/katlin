@@ -24,6 +24,7 @@ typedef float     ktl_float;
 typedef double    ktl_f64;
 typedef bool      ktl_bool;
 typedef const char* ktl_str;
+typedef size_t    ktl_usize;
 
 // Type-generic printing helpers
 static inline void ktl_print_i(long long x) { printf("%lld", x); }

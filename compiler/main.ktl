@@ -54,6 +54,22 @@ fn find_arg_comma(str s) -> int {
     return -1;
 }
 
+// Map a Katlin type name to its C spelling.
+fn c_type_of(str t) -> str {
+    if str_eq(t, "int") { return "ktl_int"; }
+    if str_eq(t, "str") { return "ktl_str"; }
+    if str_eq(t, "bool") { return "ktl_bool"; }
+    if str_eq(t, "float") { return "ktl_float"; }
+    if str_eq(t, "i64") { return "ktl_i64"; }
+    if str_eq(t, "u64") { return "ktl_u64"; }
+    if str_eq(t, "byte") { return "ktl_byte"; }
+    if str_eq(t, "usize") { return "ktl_usize"; }
+    if str_eq(t, "vec") { return "ktl_vec"; }
+    if str_eq(t, "sb") { return "ktl_sb"; }
+    if str_eq(t, "arena") { return "ktl_arena"; }
+    return t;
+}
+
 fn format_c_params(str p) -> str {
     if str_len(p) == 0 { return "void"; }
     mut param_buf := sb_create(128);
@@ -61,18 +77,40 @@ fn format_c_params(str p) -> str {
     mut pos := 0;
     while pos < plen {
         ch := str_char_at(p, pos);
+
+        // Pointer types: `*mut T` -> `T*`, `*const T` -> `const T*`.
+        if ch == 42 { // '*'
+            mut q := pos + 1;
+            while q < plen && is_space(str_char_at(p, q)) { q += 1; }
+            mut is_const := false;
+            mut matched := false;
+            if q + 3 <= plen && str_eq(str_sub(p, q, 3), "mut") {
+                matched = true;
+                q += 3;
+            } else if q + 5 <= plen && str_eq(str_sub(p, q, 5), "const") {
+                matched = true;
+                is_const = true;
+                q += 5;
+            }
+            if matched {
+                while q < plen && is_space(str_char_at(p, q)) { q += 1; }
+                ts := q;
+                while q < plen && is_alnum(str_char_at(p, q)) { q += 1; }
+                if q > ts {
+                    if is_const { sb_append(param_buf, "const "); }
+                    sb_append(param_buf, c_type_of(str_sub(p, ts, q - ts)));
+                    sb_append(param_buf, "*");
+                    pos = q;
+                    continue;
+                }
+            }
+        }
+
         if is_alpha(ch) {
             start := pos;
             while pos < plen && is_alnum(str_char_at(p, pos)) { pos += 1; }
             w := str_sub(p, start, pos - start);
-            if str_eq(w, "str") { sb_append(param_buf, "ktl_str"); }
-            else if str_eq(w, "int") { sb_append(param_buf, "ktl_int"); }
-            else if str_eq(w, "bool") { sb_append(param_buf, "ktl_bool"); }
-            else if str_eq(w, "float") { sb_append(param_buf, "ktl_float"); }
-            else if str_eq(w, "i64") { sb_append(param_buf, "ktl_i64"); }
-            else if str_eq(w, "vec") { sb_append(param_buf, "ktl_vec"); }
-            else if str_eq(w, "sb") { sb_append(param_buf, "ktl_sb"); }
-            else { sb_append(param_buf, w); }
+            sb_append(param_buf, c_type_of(w));
             continue;
         }
         if ch == 38 { // '&' -> '*'
@@ -696,20 +734,37 @@ fn transpile_source(str src, bool test_mode) -> str {
                 continue;
             }
 
-            if str_eq(word, "int") { sb_append(out_buf, "ktl_int"); continue; }            if str_eq(word, "str") { sb_append(out_buf, "ktl_str"); continue; }
+            if str_eq(word, "int") { sb_append(out_buf, "ktl_int"); continue; }
+            if str_eq(word, "str") { sb_append(out_buf, "ktl_str"); continue; }
             if str_eq(word, "bool") { sb_append(out_buf, "ktl_bool"); continue; }
             if str_eq(word, "float") { sb_append(out_buf, "ktl_float"); continue; }
             if str_eq(word, "i64") { sb_append(out_buf, "ktl_i64"); continue; }
-            // `vec` and `sb` are also plausible VARIABLE names, so only treat
-            // them as types when a declared name follows. Without this,
-            // `sb_append(sb, "x")` rewrote the argument to `ktl_sb`.
-            if str_eq(word, "vec") || str_eq(word, "sb") {
+            if str_eq(word, "u64") { sb_append(out_buf, "ktl_u64"); continue; }
+            if str_eq(word, "usize") { sb_append(out_buf, "ktl_usize"); continue; }
+            if str_eq(word, "raw") {
+                // `raw { ... }`: no distinct semantics yet, but the block is
+                // accepted and the intent stays visible in the generated C.
+                mut rlook := pos;
+                while rlook < len && is_space(str_char_at(src, rlook)) { rlook += 1; }
+                if rlook < len && str_char_at(src, rlook) == 123 { // '{'
+                    pos = rlook + 1;
+                    if in_main { main_depth += 1; }
+                    if fn_depth > 0 { fn_depth += 1; }
+                    sb_append(out_buf, "/* raw */ {");
+                    continue;
+                }
+            }
+            // `vec`, `sb`, `arena` and `byte` are also plausible VARIABLE
+            // names, so they count as types only when a declared name follows.
+            // Without this guard `sb_append(sb, "x")` rewrote its argument to
+            // `ktl_sb`, and a variable named `arena` became `ktl_arena`.
+            if str_eq(word, "vec") || str_eq(word, "sb") || str_eq(word, "arena") || str_eq(word, "byte") {
                 mut look := pos;
                 while look < len && is_space(str_char_at(src, look)) { look += 1; }
                 id_start := look;
                 while look < len && is_alnum(str_char_at(src, look)) { look += 1; }
                 if look > id_start {
-                    if str_eq(word, "vec") { sb_append(out_buf, "ktl_vec"); } else { sb_append(out_buf, "ktl_sb"); }
+                    sb_append(out_buf, c_type_of(word));
                     continue;
                 }
                 sb_append(out_buf, word);
@@ -898,6 +953,40 @@ fn transpile_source(str src, bool test_mode) -> str {
             // Normal word
             sb_append(out_buf, word);
             continue;
+        }
+
+        // Pointer types: `*mut T` -> `T*`, `*const T` -> `const T*`.
+        // Only recognised when `mut`/`const` follows, so multiplication and
+        // dereference (`*p`, `a * b`) are left alone.
+        if c == 42 { // '*'
+            mut p := pos + 1;
+            while p < len && is_space(str_char_at(src, p)) { p += 1; }
+            mut is_const := false;
+            mut matched := false;
+            if p + 3 <= len && str_eq(str_sub(src, p, 3), "mut") {
+                if p + 3 >= len || !is_alnum(str_char_at(src, p + 3)) {
+                    matched = true;
+                    p += 3;
+                }
+            } else if p + 5 <= len && str_eq(str_sub(src, p, 5), "const") {
+                if p + 5 >= len || !is_alnum(str_char_at(src, p + 5)) {
+                    matched = true;
+                    is_const = true;
+                    p += 5;
+                }
+            }
+            if matched {
+                while p < len && is_space(str_char_at(src, p)) { p += 1; }
+                ts := p;
+                while p < len && is_alnum(str_char_at(src, p)) { p += 1; }
+                if p > ts {
+                    if is_const { sb_append(out_buf, "const "); }
+                    sb_append(out_buf, c_type_of(str_sub(src, ts, p - ts)));
+                    sb_append(out_buf, "*");
+                    pos = p;
+                    continue;
+                }
+            }
         }
 
         // Opening brace '{'
