@@ -163,6 +163,20 @@ static inline ktl_int ktl_abs(ktl_int x) { return x < 0 ? -x : x; }
 static inline ktl_int ktl_min(ktl_int a, ktl_int b) { return a < b ? a : b; }
 static inline ktl_int ktl_max(ktl_int a, ktl_int b) { return a > b ? a : b; }
 
+// FNV-1a (32-bit, sign-cleared) content hash.
+// The compiler embeds a hash of this runtime header into every generated C
+// file, so an incremental build notices when the runtime changes even though
+// the user's source did not.
+static inline ktl_int ktl_hash(const char* s) {
+    if (!s) return 0;
+    uint32_t h = 2166136261u;
+    while (*s) {
+        h ^= (unsigned char)(*s++);
+        h *= 16777619u;
+    }
+    return (ktl_int)(h & 0x7fffffffu);
+}
+
 // String Utilities
 static inline ktl_int ktl_str_len(const char* s) {
     if (!s) return 0;
@@ -518,6 +532,7 @@ static inline void ktl_arena_destroy(ktl_arena* a) {
 #define abs(x) ktl_abs(x)
 #define min(a, b) ktl_min(a, b)
 #define max(a, b) ktl_max(a, b)
+#define hash(s) ktl_hash(s)
 #define alloc_ints(n) ktl_alloc_ints(n)
 #define free_ints(p) ktl_free_ints(p)
 #define assert(c, m) ktl_assert(c, m)

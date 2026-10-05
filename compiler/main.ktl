@@ -270,6 +270,7 @@ fn print_help {
     println("\x1b[1;33mCommands:\x1b[0m");
     println("  run <file.ktl> [args...]       Compile and execute Katlin source immediately");
     println("  build <file.ktl> [options]     Compile Katlin source to a native static binary");
+    println("  check <file.ktl>               Type-check only; no binary produced");
     println("  test [path]                    Find and run all test blocks across the project");
     println("  fmt [path]                     Auto-format .ktl source files");
     println("  init <project_name>            Scaffold a new Katlin application project");
@@ -1237,9 +1238,10 @@ fn check_borrows(str src, str path) -> int {
 
 // Resolve the directory holding katlin_runtime.h so that projects living
 // outside the Katlin repository still compile. Search order:
-//   1. $KATLIN_STD                 (explicit override)
-//   2. <compiler_dir>/../std       (standard checkout / install layout)
-//   3. ./std                       (running from the repository root)
+//   1. $KATLIN_STD                      (explicit override)
+//   2. <compiler_dir>/../std            (checkout layout)
+//   3. <compiler_dir>/../lib/katlin/std (installed layout, see install.sh)
+//   4. ./std                            (running from the repository root)
 fn find_std_dir() -> str {
     override := env_get("KATLIN_STD");
     if str_len(override) > 0 {
@@ -1247,9 +1249,15 @@ fn find_std_dir() -> str {
     }
 
     dir := path_dir(args_get(0));
-    cand := str_concat(dir, "/../std");
-    if file_exists(str_concat(cand, "/katlin_runtime.h")) {
-        return cand;
+    if str_len(dir) > 0 {
+        checkout := str_concat(dir, "/../std");
+        if file_exists(str_concat(checkout, "/katlin_runtime.h")) {
+            return checkout;
+        }
+        installed := str_concat(dir, "/../lib/katlin/std");
+        if file_exists(str_concat(installed, "/katlin_runtime.h")) {
+            return installed;
+        }
     }
     if file_exists("std/katlin_runtime.h") {
         return "std";
@@ -1257,7 +1265,39 @@ fn find_std_dir() -> str {
     return "std";
 }
 
-fn compile_file(str src_path, str out_binary, bool optimize, bool run_after, str extra_args, str tool_flags) -> int {
+// Read `opt_level = N` from ./katlin.toml, or -1 when there is no such file
+// or key. The scaffold written by `katlin init` produces this file; without
+// this lookup the setting it contains had no effect at all.
+fn toml_opt_level() -> int {
+    if !file_exists("katlin.toml") {
+        return -1;
+    }
+    txt := file_read("katlin.toml");
+    idx := str_index_of(txt, "opt_level", 0);
+    if idx < 0 {
+        return -1;
+    }
+    mut i := idx + 9;
+    n := str_len(txt);
+    while i < n && (str_char_at(txt, i) == 32 || str_char_at(txt, i) == 9) { i += 1; }
+    if i >= n || str_char_at(txt, i) != 61 { // '='
+        return -1;
+    }
+    i += 1;
+    while i < n && (str_char_at(txt, i) == 32 || str_char_at(txt, i) == 9) { i += 1; }
+    if i >= n || !is_digit(str_char_at(txt, i)) {
+        return -1;
+    }
+    mut val := 0;
+    while i < n && is_digit(str_char_at(txt, i)) {
+        val = val * 10 + (str_char_at(txt, i) - 48);
+        i += 1;
+    }
+    return val;
+}
+
+// check_only: type-check without producing a binary.
+fn compile_file(str src_path, str out_binary, bool optimize, bool run_after, str extra_args, str tool_flags, bool check_only) -> int {
     if !file_exists(src_path) {
         println("\x1b[1;31merror\x1b[0m: source file not found: %", src_path);
         return 1;
@@ -1269,10 +1309,17 @@ fn compile_file(str src_path, str out_binary, bool optimize, bool run_after, str
         return 1;
     }
 
-    // Step 1: Ensure .build directory exists
+    std_dir := find_std_dir();
+    if !file_exists(str_concat(std_dir, "/katlin_runtime.h")) {
+        println("\x1b[1;31merror\x1b[0m: cannot locate katlin_runtime.h");
+        println("  searched: %/katlin_runtime.h", std_dir);
+        println("  set KATLIN_STD to the directory that contains it, e.g.");
+        println("    KATLIN_STD=/path/to/katlin/std katlin build %", src_path);
+        return 1;
+    }
+
     system("mkdir -p .build/bin");
 
-    // Step 2: Transpile to C99
     base_name := path_base(src_path);
     c_path := str_concat(".build/", str_concat(base_name, ".c"));
 
@@ -1282,11 +1329,11 @@ fn compile_file(str src_path, str out_binary, bool optimize, bool run_after, str
         return 1;
     }
 
-    c_code := transpile_source(src_content, false);
+    raw_c := transpile_source(src_content, false);
 
     // A file with only `test` blocks has no entry point in a normal build.
     // Say so plainly instead of letting the linker report a missing `main`.
-    if !str_contains(c_code, "int main(int argc") {
+    if !check_only && !str_contains(raw_c, "int main(int argc") {
         println("\x1b[1;31merror\x1b[0m: no 'fn main' found in %", src_path);
         if str_contains(src_content, "test \"") {
             println("  this file declares test blocks; run it with:");
@@ -1295,9 +1342,13 @@ fn compile_file(str src_path, str out_binary, bool optimize, bool run_after, str
         return 1;
     }
 
-    file_write(c_path, c_code);
+    // Stamp the generated C with a hash of the runtime header plus the exact
+    // clang flags. Incremental builds compare the whole file, so a change to
+    // std/katlin_runtime.h or a switch between --debug and --release both
+    // invalidate the cache even though the user's source is untouched.
+    hdr := file_read(str_concat(std_dir, "/katlin_runtime.h"));
+    stamp := str_concat("// katlin-runtime-hash: ", str_int(hash(hdr)));
 
-    // Step 3: Determine output binary path
     mut str final_bin = out_binary;
     if str_len(final_bin) == 0 {
         final_bin = str_concat(".build/bin/", base_name);
@@ -1316,28 +1367,48 @@ fn compile_file(str src_path, str out_binary, bool optimize, bool run_after, str
         opt_flags = str_concat(opt_flags, tool_flags);
     }
 
-    // Step 5: Invoke Clang
-    std_dir := find_std_dir();
-    if !file_exists(str_concat(std_dir, "/katlin_runtime.h")) {
-        println("\x1b[1;31merror\x1b[0m: cannot locate katlin_runtime.h");
-        println("  searched: %/katlin_runtime.h", std_dir);
-        println("  set KATLIN_STD to the directory that contains it, e.g.");
-        println("    KATLIN_STD=/path/to/katlin/std katlin build %", src_path);
-        return 1;
-    }
     inc_flags := str_concat(" -I", str_concat(std_dir, " -I. "));
-    tail_flags := str_concat(" -o ", str_concat(final_bin, str_concat(" ", opt_flags)));
-    cmd := str_concat("clang ", str_concat(c_path, str_concat(inc_flags, tail_flags)));
-    ret := system(cmd);
 
-    if ret != 0 {
-        println("\x1b[1;31merror\x1b[0m: native compilation failed (clang exited with code %)", ret);
-        if str_len(tool_flags) > 0 {
-            println("  hint: cross-compiling needs a target sysroot containing that");
-            println("        platform's libc headers. For example:");
-            println("          katlin build % --target=aarch64-linux-gnu --sysroot=/usr/aarch64-linux-gnu", src_path);
+    // Now that the flags are known, assemble the final translation unit.
+    // Flags live inside the file so that changing them busts the cache.
+    c_code := str_concat(stamp, str_concat("\n// katlin-flags:", str_concat(str_concat(" ", opt_flags), str_concat("\n", raw_c))));
+
+    // Step 5: `check` runs clang's syntax/semantic analysis only.
+    if check_only {
+        file_write(c_path, c_code);
+        cmd := str_concat("clang -fsyntax-only ", str_concat(c_path, inc_flags));
+        ret := system(cmd);
+        if ret != 0 {
+            println("\x1b[1;31merror\x1b[0m: % failed to type-check", src_path);
+            return 1;
         }
-        return 1;
+        println("\x1b[1;32m✓\x1b[0m %: no errors", src_path);
+        return 0;
+    }
+
+    // Step 6: Incremental build. If the generated C is byte-identical to last
+    // time and the binary still exists, clang has nothing to do.
+    mut str old_c = "";
+    if file_exists(c_path) {
+        old_c = file_read(c_path);
+    }
+    up_to_date := str_eq(old_c, c_code) && file_exists(final_bin);
+
+    if !up_to_date {
+        file_write(c_path, c_code);
+        tail_flags := str_concat(" -o ", str_concat(final_bin, str_concat(" ", opt_flags)));
+        cmd := str_concat("clang ", str_concat(c_path, str_concat(inc_flags, tail_flags)));
+        ret := system(cmd);
+
+        if ret != 0 {
+            println("\x1b[1;31merror\x1b[0m: native compilation failed (clang exited with code %)", ret);
+            if str_len(tool_flags) > 0 {
+                println("  hint: cross-compiling needs a target sysroot containing that");
+                println("        platform's libc headers. For example:");
+                println("          katlin build % --target=aarch64-linux-gnu --sysroot=/usr/aarch64-linux-gnu", src_path);
+            }
+            return 1;
+        }
     }
 
     if run_after {
@@ -1348,7 +1419,11 @@ fn compile_file(str src_path, str out_binary, bool optimize, bool run_after, str
         return system(run_cmd);
     }
 
-    println("\x1b[1;32m✓\x1b[0m Successfully built: %", final_bin);
+    if up_to_date {
+        println("\x1b[1;32m✓\x1b[0m Up to date: %", final_bin);
+    } else {
+        println("\x1b[1;32m✓\x1b[0m Successfully built: %", final_bin);
+    }
     return 0;
 }
 
@@ -1601,7 +1676,16 @@ fn main {
         for i in 3..total {
             extra = str_concat(extra, str_concat(args_get(i), " "));
         }
-        exit(compile_file(src_file, "", true, true, extra, ""));
+        exit(compile_file(src_file, "", true, true, extra, "", false));
+    }
+
+    // Type-check only: no binary, no linking. Useful in editors and CI.
+    if str_eq(cmd, "check") {
+        if total < 3 {
+            println("\x1b[1;31merror\x1b[0m: no input file specified for 'check'");
+            exit(1);
+        }
+        exit(compile_file(args_get(2), "", true, false, "", "", true));
     }
 
     if str_eq(cmd, "build") {
@@ -1614,6 +1698,7 @@ fn main {
         mut optimize := true;
         mut str target = "";
         mut str sysroot = "";
+        mut explicit_opt := false;
 
         mut i := 3;
         while i < total {
@@ -1635,12 +1720,23 @@ fn main {
                 i += 1;
             } else if str_eq(arg, "--debug") {
                 optimize = false;
+                explicit_opt = true;
                 i += 1;
             } else if str_eq(arg, "--release") {
                 optimize = true;
+                explicit_opt = true;
                 i += 1;
             } else {
                 i += 1;
+            }
+        }
+
+        // Honour katlin.toml only when the command line did not decide.
+        // `opt_level = 0` means debug, anything higher means optimised.
+        if !explicit_opt {
+            level := toml_opt_level();
+            if level == 0 {
+                optimize = false;
             }
         }
 
@@ -1654,12 +1750,12 @@ fn main {
             tool_flags = str_concat(tool_flags, str_concat(" --sysroot=", sysroot));
         }
 
-        exit(compile_file(src_file, out_bin, optimize, false, "", tool_flags));
+        exit(compile_file(src_file, out_bin, optimize, false, "", tool_flags, false));
     }
 
     // Fallback: if user specified 'katlin file.ktl', default to run
     if file_exists(cmd) {
-        exit(compile_file(cmd, "", true, true, "", ""));
+        exit(compile_file(cmd, "", true, true, "", "", false));
     }
 
     println("\x1b[1;31merror\x1b[0m: unknown command '%'", cmd);

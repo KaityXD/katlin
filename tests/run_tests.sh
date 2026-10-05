@@ -197,6 +197,68 @@ fi
 
 # --------------------------------------------------------------------------
 echo
+echo "toolchain"
+# --------------------------------------------------------------------------
+# check: type-checks without producing a binary
+"$KATLIN" check "$ROOT/examples/tour.ktl" >/dev/null 2>&1
+check_eq "check accepts a valid file" "0" "$?"
+check_eq "check produces no binary" "no" "$([ -f .build/tour ] && echo yes || echo no)"
+"$KATLIN" check "$ROOT/examples/borrow_fail.ktl" >/dev/null 2>&1
+check_eq "check rejects an aliased borrow" "1" "$?"
+
+# incremental build: identical source must not re-run clang
+"$KATLIN" build "$ROOT/examples/tour.ktl" -o "$WORK/inc1" >/dev/null 2>&1
+out="$("$KATLIN" build "$ROOT/examples/tour.ktl" -o "$WORK/inc1" 2>&1 | strip)"
+check_contains "unchanged source skips recompilation" "Up to date" "$out"
+
+# ...but switching optimisation level must invalidate the cache
+out="$("$KATLIN" build "$ROOT/examples/tour.ktl" --debug -o "$WORK/inc1" 2>&1 | strip)"
+check_contains "changing flags invalidates the cache" "Successfully built" "$out"
+
+# katlin.toml is actually read
+mkdir -p "$WORK/tomlproj/src"
+printf 'fn main { println("hi"); }\n' > "$WORK/tomlproj/src/main.ktl"
+printf '[build]\nopt_level = 0\n' > "$WORK/tomlproj/katlin.toml"
+( cd "$WORK/tomlproj" && "$KATLIN" build src/main.ktl -o out >/dev/null 2>&1 )
+if readelf -S "$WORK/tomlproj/out" 2>/dev/null | grep -q "\.debug_info"; then
+    ok "katlin.toml opt_level=0 selects debug build"
+else
+    bad "katlin.toml opt_level=0 selects debug build" "no .debug_info section"
+fi
+printf '[build]\nopt_level = 3\n' > "$WORK/tomlproj/katlin.toml"
+rm -f "$WORK/tomlproj/out"
+( cd "$WORK/tomlproj" && "$KATLIN" build src/main.ktl -o out >/dev/null 2>&1 )
+if readelf -S "$WORK/tomlproj/out" 2>/dev/null | grep -q "\.debug_info"; then
+    bad "katlin.toml opt_level=3 selects optimised build" "unexpected .debug_info"
+else
+    ok "katlin.toml opt_level=3 selects optimised build"
+fi
+rm -f "$WORK/tomlproj/out"
+( cd "$WORK/tomlproj" && "$KATLIN" build src/main.ktl --debug -o out >/dev/null 2>&1 )
+if readelf -S "$WORK/tomlproj/out" 2>/dev/null | grep -q "\.debug_info"; then
+    ok "--debug overrides katlin.toml"
+else
+    bad "--debug overrides katlin.toml" "toml won over the command line"
+fi
+
+# install.sh: the installed compiler must find its runtime by itself
+if [ -x "$ROOT/install.sh" ]; then
+    PREFIX="$WORK/prefix" "$ROOT/install.sh" >/dev/null 2>&1
+    if [ -x "$WORK/prefix/bin/katlin" ]; then
+        ok "install.sh installs the compiler"
+        mkdir -p "$WORK/elsewhere"
+        printf 'fn main { println("installed"); }\n' > "$WORK/elsewhere/t.ktl"
+        ( cd "$WORK/elsewhere" && env -u KATLIN_STD "$WORK/prefix/bin/katlin" run t.ktl >/dev/null 2>&1 )
+        check_eq "installed compiler resolves std/ from its prefix" "0" "$?"
+    else
+        bad "install.sh installs the compiler" "no binary at prefix/bin"
+    fi
+else
+    bad "install.sh exists" "not executable"
+fi
+
+# --------------------------------------------------------------------------
+echo
 echo "examples"
 # --------------------------------------------------------------------------
 for f in "$ROOT"/examples/*.ktl; do
