@@ -1,0 +1,68 @@
+// examples/strict_borrows.ktl
+// A #strict program that PASSES the borrow checker.
+//
+// The `#strict` pragma turns on compile-time aliasing checks for the whole
+// file. Under #strict the compiler guarantees:
+//
+//   1. A variable may not be borrowed mutably (`&x`) more than once inside a
+//      single call -- no two `&` arguments may name the same variable.
+//   2. A variable may not be borrowed mutably unless it was declared `mut`.
+//
+// Both rules are enforced before any code is generated, so a rejected program
+// never reaches the C backend.
+//
+// Run it:            katlin run examples/strict_borrows.ktl
+// See it rejected:   katlin build examples/borrow_fail.ktl
+//                    katlin build examples/borrow_immutable.ktl
+
+#strict
+
+struct Wallet {
+    int balance;
+}
+
+// Two `&` parameters, but they are always given distinct variables below.
+fn swap(int &a, int &b) {
+    int temp = a;
+    a = b;
+    b = temp;
+}
+
+// A single mutable borrow -- fine.
+fn deposit(int &balance, int amount) {
+    balance = balance + amount;
+}
+
+// Two SEPARATE mutable borrows of the same variable, one after the other, are
+// fine: the first borrow has ended before the second begins.
+fn double_deposit(int &balance, int amount) {
+    deposit(&balance, amount);
+    deposit(&balance, amount);
+}
+
+fn main {
+    println("=== #strict borrow checking ===");
+
+    // Two distinct variables borrowed at once: allowed.
+    mut int left = 1;
+    mut int right = 2;
+    swap(&left, &right);
+    println("swap(&left, &right)          -> left=% right=%", left, right);
+
+    // Same variable borrowed again, but only after the first borrow ended.
+    mut int total = 100;
+    double_deposit(&total, 25);
+    println("double_deposit(&total, 25)   -> total=%", total);
+
+    // A mutable struct value passed by reference.
+    mut wallet = Wallet{ balance = 50 };
+    deposit(&wallet.balance, 10);
+    println("deposit(&wallet.balance, 10) -> balance=%", wallet.balance);
+
+    // Borrowing is checked, not banned: this is the same call shape that
+    // examples/borrow_fail.ktl gets rejected for, with two distinct operands.
+    swap(&total, &left);
+    println("swap(&total, &left)          -> total=% left=%", total, left);
+
+    println("=== all borrows accepted ===");
+}

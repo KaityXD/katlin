@@ -1,0 +1,43 @@
+// examples/test_extensions.ktl
+fn main {
+    println("Testing runtime extensions...");
+
+    // Test args
+    println("Arg count: %", args_count());
+    println("Arg 0: %", args_get(0));
+
+    // Test string builder
+    mut sb := sb_create(32);
+    sb_append(sb, "Katlin");
+    sb_append(sb, " is ");
+    sb_append(sb, "fast!");
+    built := sb_build(sb);
+    println("SB built: %", built);
+    assert(str_eq(built, "Katlin is fast!"), "sb must match");
+    sb_free(sb);
+
+    // Test string substring and char at
+    s := "Hello World";
+    sub := str_sub(s, 0, 5);
+    println("Substring: %", sub);
+    assert(str_eq(sub, "Hello"), "Substring must be Hello");
+
+    ch := str_char_at(s, 0);
+    println("Char at 0: %", ch);
+    assert(ch == 72, "Char 0 must be 'H' (72)");
+
+    // Test prefixes and contains
+    assert(str_starts_with(s, "Hello"), "starts with Hello");
+    assert(str_ends_with(s, "World"), "ends with World");
+    assert(str_contains(s, "lo Wo"), "contains 'lo Wo'");
+
+    // Test path helpers
+    path := "src/compiler/main.ktl";
+    base := path_base(path);
+    dir := path_dir(path);
+    println("Base: %, Dir: %", base, dir);
+    assert(str_eq(base, "main"), "Base must be main");
+    assert(str_eq(dir, "src/compiler"), "Dir must be src/compiler");
+
+    println("All runtime extensions verified!");
+}

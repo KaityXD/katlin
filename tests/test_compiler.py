@@ -102,7 +102,10 @@ fn main {
 
 class TestEndToEndExecution(unittest.TestCase):
     def test_run_idkbro(self):
-        sample = os.path.join(ROOT_DIR, "examples", "idkbro.ktl")
+        # idkbro exercises fluent chaining and default arguments, which the
+        # Python bootstrap compiler supports but the native compiler does not
+        # yet. It therefore lives under examples/unsupported/ .
+        sample = os.path.join(ROOT_DIR, "examples", "unsupported", "idkbro.ktl")
         exit_code = compile_katlin(sample, run_after=False, optimize=True)
         self.assertEqual(exit_code, 0)
 

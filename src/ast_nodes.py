@@ -61,6 +61,14 @@ class ReturnStmt(ASTNode):
     guard_condition: Optional[ASTNode] = None  # for 'return if condition'
 
 @dataclass
+class BreakStmt(ASTNode):
+    pass
+
+@dataclass
+class ContinueStmt(ASTNode):
+    pass
+
+@dataclass
 class PrintStmt(ASTNode):
     format_str: str = ""
     args: List[ASTNode] = field(default_factory=list)

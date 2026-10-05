@@ -1,0 +1,1668 @@
+// compiler/main.ktl
+// Katlin Native Self-Hosted Compiler Driver
+// Fully written in Katlin. Compiles to native static ELF machine code.
+// Zero Python dependency.
+
+// -------------------------------------------------------------
+// Character classification helpers
+// -------------------------------------------------------------
+
+fn is_space(int c) -> bool {
+    return c == 32 || c == 9 || c == 10 || c == 13;
+}
+
+fn is_digit(int c) -> bool {
+    return c >= 48 && c <= 57;
+}
+
+fn is_alpha(int c) -> bool {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95;
+}
+
+fn is_alnum(int c) -> bool {
+    return is_alpha(c) || is_digit(c);
+}
+
+fn trim_string(str s) -> str {
+    len := str_len(s);
+    mut start := 0;
+    while start < len && is_space(str_char_at(s, start)) {
+        start += 1;
+    }
+    mut end := len;
+    while end > start && is_space(str_char_at(s, end - 1)) {
+        end -= 1;
+    }
+    if start >= end { return ""; }
+    return str_sub(s, start, end - start);
+}
+
+fn find_arg_comma(str s) -> int {
+    len := str_len(s);
+    mut in_str := false;
+    mut depth := 0;
+    for i in 0..len {
+        c := str_char_at(s, i);
+        if c == 34 { // '"'
+            in_str = !in_str;
+        } else if !in_str {
+            if c == 40 || c == 91 || c == 123 { depth += 1; }
+            else if c == 41 || c == 93 || c == 125 { depth -= 1; }
+            else if c == 44 && depth == 0 { return i; } // ','
+        }
+    }
+    return -1;
+}
+
+fn format_c_params(str p) -> str {
+    if str_len(p) == 0 { return "void"; }
+    mut param_buf := sb_create(128);
+    plen := str_len(p);
+    mut pos := 0;
+    while pos < plen {
+        ch := str_char_at(p, pos);
+        if is_alpha(ch) {
+            start := pos;
+            while pos < plen && is_alnum(str_char_at(p, pos)) { pos += 1; }
+            w := str_sub(p, start, pos - start);
+            if str_eq(w, "str") { sb_append(param_buf, "ktl_str"); }
+            else if str_eq(w, "int") { sb_append(param_buf, "ktl_int"); }
+            else if str_eq(w, "bool") { sb_append(param_buf, "ktl_bool"); }
+            else if str_eq(w, "float") { sb_append(param_buf, "ktl_float"); }
+            else if str_eq(w, "i64") { sb_append(param_buf, "ktl_i64"); }
+            else if str_eq(w, "vec") { sb_append(param_buf, "ktl_vec"); }
+            else if str_eq(w, "sb") { sb_append(param_buf, "ktl_sb"); }
+            else { sb_append(param_buf, w); }
+            continue;
+        }
+        if ch == 38 { // '&' -> '*'
+            sb_append_char(param_buf, 42); // '*'
+            pos += 1;
+            continue;
+        }
+        sb_append_char(param_buf, ch);
+        pos += 1;
+    }
+    res := sb_build(param_buf);
+    return res;
+}
+
+// Look up a compile-time type recorded for an inferred `name := value`.
+fn type_of(str map, str name) -> str {
+    needle := str_concat(str_concat("|", name), "=");
+    idx := str_index_of(map, needle, 0);
+    if idx < 0 {
+        return "";
+    }
+    start := idx + str_len(needle);
+    n := str_len(map);
+    mut j := start;
+    while j < n && str_char_at(map, j) != 124 { // '|'
+        j += 1;
+    }
+    return str_sub(map, start, j - start);
+}
+
+// `println` argument lists are copied verbatim by the transpiler, so enum
+// prefixes (`Color.Green`) have to be rewritten here too. Flat enum constants
+// are used in the generated C, matching the statement-level handling.
+fn strip_enum_prefix(str expr, str enum_names) -> str {
+    out := sb_create(256);
+    n := str_len(expr);
+    mut i := 0;
+    while i < n {
+        ch := str_char_at(expr, i);
+        if is_alpha(ch) {
+            ws := i;
+            while i < n && is_alnum(str_char_at(expr, i)) { i += 1; }
+            w := str_sub(expr, ws, i - ws);
+            if str_contains(enum_names, str_concat("|", str_concat(w, "|"))) {
+                mut j := i;
+                while j < n && is_space(str_char_at(expr, j)) { j += 1; }
+                if j < n && str_char_at(expr, j) == 46 { // '.'
+                    i = j + 1;
+                    continue;
+                }
+            }
+            sb_append(out, w);
+        } else {
+            sb_append_char(out, ch);
+            i += 1;
+        }
+    }
+    return sb_build(out);
+}
+
+// Inside a `println` argument list the transpiler copies text verbatim, so
+// compile-time `.type` resolution has to happen here as well.
+fn resolve_type_access(str expr, str type_map) -> str {
+    trimmed := trim_string(expr);
+    n := str_len(trimmed);
+    if n > 5 && str_ends_with(trimmed, ".type") {
+        base := str_sub(trimmed, 0, n - 5);
+        t := type_of(type_map, base);
+        if str_len(t) > 0 {
+            return str_concat("\"", str_concat(t, "\""));
+        }
+    }
+    return expr;
+}
+
+fn emit_print(sb &out_sb, str args_str, bool is_nl, str type_map, str enum_names) {
+    idx_comma := find_arg_comma(args_str);
+    if idx_comma == -1 {
+        // Single argument, e.g. println("Counting from 0 to 1,000,000,000...")
+        trimmed := trim_string(args_str);
+        if str_starts_with(trimmed, "\"") && str_ends_with(trimmed, "\"") {
+            tlen := str_len(trimmed);
+            inner := str_sub(trimmed, 1, tlen - 2);
+            sb_append(out_sb, "printf(\"");
+            sb_append(out_sb, inner);
+            if is_nl { sb_append(out_sb, "\\n"); }
+            sb_append(out_sb, "\")");
+        } else {
+            sb_append(out_sb, "ktl_print_any(");
+            sb_append(out_sb, strip_enum_prefix(resolve_type_access(trimmed, type_map), enum_names));
+            sb_append(out_sb, ")");
+            if is_nl { sb_append(out_sb, "; printf(\"\\n\")"); }
+        }
+        return;
+    }
+
+    // Multiple arguments: first is format string, rest are values
+    fmt_raw := trim_string(str_sub(args_str, 0, idx_comma));
+    mut str rest_args = trim_string(str_sub(args_str, idx_comma + 1, str_len(args_str) - (idx_comma + 1)));
+
+    mut str fmt_text = fmt_raw;
+    if str_starts_with(fmt_raw, "\"") && str_ends_with(fmt_raw, "\"") {
+        fmt_text = str_sub(fmt_raw, 1, str_len(fmt_raw) - 2);
+    }
+
+    flen := str_len(fmt_text);
+    mut last := 0;
+    for i in 0..flen {
+        if str_char_at(fmt_text, i) == 37 { // '%'
+            piece := str_sub(fmt_text, last, i - last);
+            if str_len(piece) > 0 {
+                sb_append(out_sb, "printf(\"");
+                sb_append(out_sb, piece);
+                sb_append(out_sb, "\"); ");
+            }
+            next_comma := find_arg_comma(rest_args);
+            mut str curr_arg = "";
+            if next_comma == -1 {
+                curr_arg = trim_string(rest_args);
+                rest_args = "";
+            } else {
+                curr_arg = trim_string(str_sub(rest_args, 0, next_comma));
+                rest_args = trim_string(str_sub(rest_args, next_comma + 1, str_len(rest_args) - (next_comma + 1)));
+            }
+            if str_len(curr_arg) > 0 {
+                sb_append(out_sb, "ktl_print_any(");
+                sb_append(out_sb, strip_enum_prefix(resolve_type_access(curr_arg, type_map), enum_names));
+                sb_append(out_sb, "); ");
+            }
+            last = i + 1;
+        }
+    }
+    if last < flen {
+        trailing := str_sub(fmt_text, last, flen - last);
+        sb_append(out_sb, "printf(\"");
+        sb_append(out_sb, trailing);
+        sb_append(out_sb, "\"); ");
+    }
+    if is_nl {
+        sb_append(out_sb, "printf(\"\\n\")");
+    }
+}
+
+// -------------------------------------------------------------
+// Project Scaffolding (katlin init)
+// -------------------------------------------------------------
+
+fn cmd_init(str name) -> int {
+    if str_len(name) == 0 {
+        println("\x1b[1;31merror\x1b[0m: project name required. Example: katlin init my_project");
+        return 1;
+    }
+
+    if file_exists(name) {
+        println("\x1b[1;31merror\x1b[0m: directory '%' already exists", name);
+        return 1;
+    }
+
+    system(str_concat("mkdir -p ", str_concat(name, "/src")));
+    system(str_concat("mkdir -p ", str_concat(name, "/tests")));
+
+    toml_path := str_concat(name, "/katlin.toml");
+    toml_content := str_concat("[project]\nname = \"", str_concat(name, "\"\nversion = \"0.1.0\"\nauthor = \"Developer\"\n\n[build]\nopt_level = 3\n"));
+    file_write(toml_path, toml_content);
+
+    main_path := str_concat(name, "/src/main.ktl");
+    main_code := "// src/main.ktl\nfn main {\n    println(\"Hello from %!\", \"Katlin\");\n    for i in 0..10 {\n        println(\"Counting: %\", i);\n    }\n}\n";
+    file_write(main_path, main_code);
+
+    test_path := str_concat(name, "/tests/main_test.ktl");
+    test_code := "// tests/main_test.ktl\nfn add(int a, int b) -> int {\n    return a + b;\n}\n\ntest \"verify addition\" {\n    assert(add(2, 3) == 5, \"2 + 3 must be 5\");\n}\n";
+    file_write(test_path, test_code);
+
+    ignore_path := str_concat(name, "/.gitignore");
+    file_write(ignore_path, ".build/\nbin/\n*.o\n*.a\n");
+
+    println("\x1b[1;32m✓\x1b[0m Initialized new Katlin project in '%'", name);
+    println("  Run 'katlin run %/src/main.ktl' to get started!", name);
+    return 0;
+}
+
+// -------------------------------------------------------------
+// Version and Help
+// -------------------------------------------------------------
+
+fn print_version {
+    println("\x1b[1;34mKatlin\x1b[0m Native Compiler v0.1.0 (Self-Hosted in Katlin)");
+    println("Backend: Clang C99 / LLVM Native Vectorizer");
+    println("Platform: Linux x86_64 (Zero-GC / Bare-Metal)");
+}
+
+fn print_help {
+    print_version();
+    println("\n\x1b[1;37mUsage:\x1b[0m katlin <command> [options]\n");
+    println("\x1b[1;33mCommands:\x1b[0m");
+    println("  run <file.ktl> [args...]       Compile and execute Katlin source immediately");
+    println("  build <file.ktl> [options]     Compile Katlin source to a native static binary");
+    println("  test [path]                    Find and run all test blocks across the project");
+    println("  fmt [path]                     Auto-format .ktl source files");
+    println("  init <project_name>            Scaffold a new Katlin application project");
+    println("  version, --version, -v         Display Katlin compiler version info");
+    println("\n\x1b[1;33mBuild Options:\x1b[0m");
+    println("  -o <file>                      Specify output binary path");
+    println("  --debug                        Compile with -O0 -g (debug symbols)");
+    println("  --release                      Compile with full -O3 -flto optimizations (default)");
+    println("  --target <triple>              Cross-compile (e.g. aarch64-linux-gnu)");
+    println("  --sysroot <dir>                Sysroot for the cross target (libc headers)");
+}
+
+// -------------------------------------------------------------
+// Transpiler: Katlin -> C99
+// -------------------------------------------------------------
+
+// Collect `&name` parameters from a raw parameter list into "|a|b|" form.
+// C takes these by pointer, so every use inside the body needs a `*` prefix;
+// without that, `a = a + 1` compiled to pointer arithmetic on the pointer
+// itself and silently left the caller's variable untouched.
+fn extract_ref_params(str params) -> str {
+    mut str out = "|";
+    n := str_len(params);
+    mut i := 0;
+    while i < n {
+        if str_char_at(params, i) == 38 { // '&'
+            mut j := i + 1;
+            while j < n && is_space(str_char_at(params, j)) { j += 1; }
+            ns := j;
+            while j < n && is_alnum(str_char_at(params, j)) { j += 1; }
+            if j > ns {
+                out = str_concat(out, str_concat(str_sub(params, ns, j - ns), "|"));
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    return out;
+}
+
+fn transpile_source(str src, bool test_mode) -> str {
+    mut out_buf := sb_create(65536);
+    sb_append(out_buf, "// Generated by Katlin Native Compiler (Self-Hosted)\n");
+    sb_append(out_buf, "#include \"katlin_runtime.h\"\n\n");
+
+    len := str_len(src);
+    mut pos := 0;
+    mut in_main := false;
+    mut main_depth := 0;
+    // Test-runner state. In test mode `test "name" { ... }` blocks become
+    // void functions and the original `fn main` is renamed so the generated
+    // runner can own `main`.
+    mut test_n := 0;
+    mut main_void := false;
+    mut runner_buf := sb_create(4096);
+
+    // Aggregate-type state.
+    //   Katlin `struct Point { ... }`  -> C `typedef struct Point { ... } Point;`
+    //   Katlin `Point{ x = 1 }`        -> C `(Point){ .x = 1 }`
+    //   Katlin `Color.Green`           -> C `Green`   (flat enum constants)
+    //   Katlin `match c { case .Red: }`-> C `{ __auto_type _m = c; if (_m == Red) ... }`
+    // Known type names are tracked so `.` can be disambiguated between a struct
+    // field access (keep the dot) and an enum variant access (drop the prefix).
+    mut in_type_def := false;
+    mut def_depth := 0;
+    mut str def_name = "";
+    mut in_init := false;
+    mut init_depth := 0;
+    mut in_match := false;
+    mut match_depth := 0;
+    mut match_first := false;
+    mut match_n := 0;
+    mut str match_var = "";
+    mut str struct_names = "|";
+    mut str enum_names = "|";
+
+    // Reference parameters of the function currently being emitted. Names are
+    // matched with `*` on every use; reset when the function body closes.
+    mut str ref_params = "|";
+    mut fn_depth := 0;
+
+    // Compile-time types of `:=` variables, as "|name=int|ratio=float|".
+    // Lets `value.type` resolve without any runtime type information.
+    mut str type_map = "|";
+
+    while pos < len {
+        c := str_char_at(src, pos);
+
+        // Skip comments
+        if c == 47 && pos + 1 < len { // '/'
+            c2 := str_char_at(src, pos + 1);
+            if c2 == 47 { // '//'
+                while pos < len && str_char_at(src, pos) != 10 {
+                    sb_append_char(out_buf, str_char_at(src, pos));
+                    pos += 1;
+                }
+                sb_append_char(out_buf, 10);
+                pos += 1;
+                continue;
+            }
+            if c2 == 42 { // '/*'
+                sb_append(out_buf, "/*");
+                pos += 2;
+                while pos + 1 < len {
+                    if str_char_at(src, pos) == 42 && str_char_at(src, pos + 1) == 47 {
+                        pos += 2;
+                        sb_append(out_buf, "*/");
+                        break;
+                    }
+                    sb_append_char(out_buf, str_char_at(src, pos));
+                    pos += 1;
+                }
+                continue;
+            }
+        }
+
+        // Pragmas
+        if c == 35 { // '#'
+            while pos < len && str_char_at(src, pos) != 10 {
+                pos += 1;
+            }
+            pos += 1;
+            continue;
+        }
+
+        // String literals
+        if c == 34 { // '"'
+            sb_append_char(out_buf, 34);
+            pos += 1;
+            while pos < len {
+                sc := str_char_at(src, pos);
+                if sc == 92 && pos + 1 < len { // '\'
+                    sb_append_char(out_buf, 92);
+                    sb_append_char(out_buf, str_char_at(src, pos + 1));
+                    pos += 2;
+                    continue;
+                }
+                if sc == 34 { // '"'
+                    sb_append_char(out_buf, 34);
+                    pos += 1;
+                    break;
+                }
+                sb_append_char(out_buf, sc);
+                pos += 1;
+            }
+            continue;
+        }
+
+        // Identifiers and Keywords
+        if is_alpha(c) {
+            mut start := pos;
+            while pos < len && is_alnum(str_char_at(src, pos)) {
+                pos += 1;
+            }
+            wlen := pos - start;
+            word := str_sub(src, start, wlen);
+
+            if str_eq(word, "import") {
+                while pos < len && str_char_at(src, pos) != 10 && str_char_at(src, pos) != 59 {
+                    pos += 1;
+                }
+                if pos < len && str_char_at(src, pos) == 59 { pos += 1; }
+                continue;
+            }
+
+            if str_eq(word, "fn") {
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                name_start := pos;
+                while pos < len && is_alnum(str_char_at(src, pos)) { pos += 1; }
+                fn_name := str_sub(src, name_start, pos - name_start);
+
+                if str_eq(fn_name, "main") {
+                    in_main = true;
+                    main_depth = 1;
+                    ref_params = "|";
+                    while pos < len && str_char_at(src, pos) != 123 { pos += 1; }
+                    if pos < len && str_char_at(src, pos) == 123 { pos += 1; }
+                    if test_mode {
+                        main_void = true;
+                        sb_append(out_buf, "static void ktl_user_main(int argc, char** argv) {\n");
+                    } else {
+                        sb_append(out_buf, "int main(int argc, char** argv) {\n");
+                    }
+                    sb_append(out_buf, "    ktl_init_args(argc, argv);\n");
+                    continue;
+                }
+
+                while pos < len && str_char_at(src, pos) != 123 && str_char_at(src, pos) != 40 {
+                    pos += 1;
+                }
+                mut str params_str = "";
+                if pos < len && str_char_at(src, pos) == 40 { // '('
+                    p_start := pos + 1;
+                    while pos < len && str_char_at(src, pos) != 41 { pos += 1; }
+                    params_str = str_sub(src, p_start, pos - p_start);
+                    pos += 1;
+                }
+
+                mut str ret_type = "void";
+                while pos < len && str_char_at(src, pos) != 123 {
+                    if str_char_at(src, pos) == 45 && pos + 1 < len && str_char_at(src, pos + 1) == 62 { // '->'
+                        pos += 2;
+                        while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                        r_start := pos;
+                        while pos < len && is_alnum(str_char_at(src, pos)) { pos += 1; }
+                        raw_ret := str_sub(src, r_start, pos - r_start);
+                        if str_eq(raw_ret, "int") { ret_type = "ktl_int"; }
+                        else if str_eq(raw_ret, "str") { ret_type = "ktl_str"; }
+                        else if str_eq(raw_ret, "bool") { ret_type = "ktl_bool"; }
+                        else if str_eq(raw_ret, "float") { ret_type = "ktl_float"; }
+                        else if str_eq(raw_ret, "i64") { ret_type = "ktl_i64"; }
+                        else { ret_type = raw_ret; }
+                        break;
+                    }
+                    pos += 1;
+                }
+                while pos < len && str_char_at(src, pos) != 123 { pos += 1; }
+                if pos < len && str_char_at(src, pos) == 123 { pos += 1; }
+                ref_params = extract_ref_params(params_str);
+                fn_depth = 1;
+
+                sb_append(out_buf, "static ");
+                sb_append(out_buf, ret_type);
+                sb_append(out_buf, " ");
+                sb_append(out_buf, fn_name);
+                sb_append(out_buf, "(");
+                if str_len(params_str) == 0 {
+                    sb_append(out_buf, "void");
+                } else {
+                    sb_append(out_buf, format_c_params(params_str));
+                }
+                sb_append(out_buf, ") {\n");
+                continue;
+            }
+
+            if str_eq(word, "while") {
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                c_start := pos;
+                while pos < len && str_char_at(src, pos) != 123 { pos += 1; }
+                cond := trim_string(str_sub(src, c_start, pos - c_start));
+                if pos < len && str_char_at(src, pos) == 123 {
+                    if in_main { main_depth += 1; }
+                    pos += 1;
+                }
+
+                sb_append(out_buf, "while (");
+                sb_append(out_buf, cond);
+                sb_append(out_buf, ") {\n");
+                continue;
+            }
+
+            if str_eq(word, "if") {
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                c_start := pos;
+                while pos < len && str_char_at(src, pos) != 123 { pos += 1; }
+                cond := trim_string(str_sub(src, c_start, pos - c_start));
+                if pos < len && str_char_at(src, pos) == 123 {
+                    if in_main { main_depth += 1; }
+                    pos += 1;
+                }
+
+                sb_append(out_buf, "if (");
+                sb_append(out_buf, cond);
+                sb_append(out_buf, ") {\n");
+                continue;
+            }
+
+            if str_eq(word, "for") {
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                v_start := pos;
+                while pos < len && is_alnum(str_char_at(src, pos)) { pos += 1; }
+                var_name := str_sub(src, v_start, pos - v_start);
+
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                if pos + 2 < len && str_char_at(src, pos) == 105 && str_char_at(src, pos + 1) == 110 {
+                    pos += 2;
+                }
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                
+                r_start := pos;
+                while pos + 1 < len && !(str_char_at(src, pos) == 46 && str_char_at(src, pos + 1) == 46) {
+                    pos += 1;
+                }
+                range_start := trim_string(str_sub(src, r_start, pos - r_start));
+                pos += 2;
+
+                e_start := pos;
+                while pos < len && str_char_at(src, pos) != 123 {
+                    if pos + 4 < len && str_char_at(src, pos) == 115 && str_char_at(src, pos + 1) == 116 && str_char_at(src, pos + 2) == 101 && str_char_at(src, pos + 3) == 112 {
+                        break;
+                    }
+                    pos += 1;
+                }
+                range_end := trim_string(str_sub(src, e_start, pos - e_start));
+
+                mut str step_val = "";
+                if pos + 4 < len && str_char_at(src, pos) == 115 && str_char_at(src, pos + 1) == 116 && str_char_at(src, pos + 2) == 101 && str_char_at(src, pos + 3) == 112 {
+                    pos += 4;
+                    while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                    s_start := pos;
+                    while pos < len && str_char_at(src, pos) != 123 { pos += 1; }
+                    step_val = trim_string(str_sub(src, s_start, pos - s_start));
+                }
+
+                if pos < len && str_char_at(src, pos) == 123 {
+                    if in_main { main_depth += 1; }
+                    pos += 1;
+                }
+
+                sb_append(out_buf, "for (ktl_int ");
+                sb_append(out_buf, var_name);
+                sb_append(out_buf, " = ");
+                sb_append(out_buf, range_start);
+                sb_append(out_buf, "; ");
+                sb_append(out_buf, var_name);
+                sb_append(out_buf, " < ");
+                sb_append(out_buf, range_end);
+                sb_append(out_buf, "; ");
+                sb_append(out_buf, var_name);
+                if str_len(step_val) > 0 {
+                    sb_append(out_buf, " += ");
+                    sb_append(out_buf, step_val);
+                } else {
+                    sb_append(out_buf, "++");
+                }
+                sb_append(out_buf, ") {\n");
+                continue;
+            }
+
+            if str_eq(word, "test") {
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                mut str tname = "";
+                if pos < len && str_char_at(src, pos) == 34 { // '"'
+                    pos += 1;
+                    ns := pos;
+                    while pos < len && str_char_at(src, pos) != 34 { pos += 1; }
+                    tname = str_sub(src, ns, pos - ns);
+                    if pos < len { pos += 1; }
+                }
+                while pos < len && str_char_at(src, pos) != 123 { pos += 1; }
+
+                if test_mode {
+                    if pos < len && str_char_at(src, pos) == 123 { pos += 1; }
+                    fname := str_concat("ktl_test_", str_int(test_n));
+                    sb_append(out_buf, "\nstatic void ");
+                    sb_append(out_buf, fname);
+                    sb_append(out_buf, "(void) {\n    ktl_test_current = \"");
+                    sb_append(out_buf, tname);
+                    sb_append(out_buf, "\";\n");
+
+                    sb_append(runner_buf, "    before = ktl_test_failures;\n    ");
+                    sb_append(runner_buf, fname);
+                    sb_append(runner_buf, "();\n    if (ktl_test_failures == before) {\n");
+                    sb_append(runner_buf, "        printf(\"  PASS  %s\", ktl_test_current); puts(\"\");\n");
+                    sb_append(runner_buf, "    } else {\n        failed_tests++;\n    }\n");
+                    test_n += 1;
+                    continue;
+                }
+
+                // Normal build: strip the block so it costs nothing at runtime.
+                if pos < len && str_char_at(src, pos) == 123 {
+                    pos += 1;
+                    mut depth := 1;
+                    while pos < len && depth > 0 {
+                        ch := str_char_at(src, pos);
+                        if ch == 123 { depth += 1; }
+                        else if ch == 125 { depth -= 1; }
+                        pos += 1;
+                    }
+                }
+                continue;
+            }
+
+            if str_eq(word, "mut") {
+                // `mut x = 5` carries no type annotation. Emit an inferred
+                // declaration; without this the name was used before being
+                // declared and C reported an undeclared identifier.
+                // `mut int x = 1` and `mut x := 5` keep their existing paths.
+                mut mq := pos;
+                while mq < len && is_space(str_char_at(src, mq)) { mq += 1; }
+                ns2 := mq;
+                while mq < len && is_alnum(str_char_at(src, mq)) { mq += 1; }
+                first := str_sub(src, ns2, mq - ns2);
+                mut mq2 := mq;
+                while mq2 < len && is_space(str_char_at(src, mq2)) { mq2 += 1; }
+                is_type_word := str_eq(first, "int") || str_eq(first, "str") || str_eq(first, "bool") || str_eq(first, "float") || str_eq(first, "i64") || str_eq(first, "u64") || str_eq(first, "vec") || str_eq(first, "sb");
+                plain_assign := mq2 < len && str_char_at(src, mq2) == 61 && (mq2 + 1 >= len || str_char_at(src, mq2 + 1) != 61);
+                if str_len(first) > 0 && !is_type_word && plain_assign {
+                    sb_append(out_buf, "__auto_type ");
+                }
+                continue;
+            }
+
+            // Look ahead for :=
+            mut look := pos;
+            while look < len && is_space(str_char_at(src, look)) { look += 1; }
+            if look + 1 < len && str_char_at(src, look) == 58 && str_char_at(src, look + 1) == 61 { // ':='
+                sb_append(out_buf, "__auto_type ");
+                sb_append(out_buf, word);
+                sb_append(out_buf, " = ");
+                pos = look + 2;
+
+                // Classify the initialiser so `value.type` can be answered at
+                // compile time (no runtime type tags, no allocation).
+                mut v := pos;
+                while v < len && is_space(str_char_at(src, v)) { v += 1; }
+                mut str iname = "int";
+                if v < len && str_char_at(src, v) == 34 { // '"'
+                    iname = "str";
+                } else if v < len && is_digit(str_char_at(src, v)) {
+                    mut w := v;
+                    while w < len && (is_digit(str_char_at(src, w)) || str_char_at(src, w) == 46) {
+                        if str_char_at(src, w) == 46 { iname = "float"; }
+                        w += 1;
+                    }
+                } else if v + 4 <= len && str_eq(str_sub(src, v, 4), "true") {
+                    iname = "bool";
+                } else if v + 5 <= len && str_eq(str_sub(src, v, 5), "false") {
+                    iname = "bool";
+                }
+                type_map = str_concat(type_map, str_concat(word, str_concat("=", str_concat(iname, "|"))));
+                continue;
+            }
+
+            if str_eq(word, "int") { sb_append(out_buf, "ktl_int"); continue; }            if str_eq(word, "str") { sb_append(out_buf, "ktl_str"); continue; }
+            if str_eq(word, "bool") { sb_append(out_buf, "ktl_bool"); continue; }
+            if str_eq(word, "float") { sb_append(out_buf, "ktl_float"); continue; }
+            if str_eq(word, "i64") { sb_append(out_buf, "ktl_i64"); continue; }
+            // `vec` and `sb` are also plausible VARIABLE names, so only treat
+            // them as types when a declared name follows. Without this,
+            // `sb_append(sb, "x")` rewrote the argument to `ktl_sb`.
+            if str_eq(word, "vec") || str_eq(word, "sb") {
+                mut look := pos;
+                while look < len && is_space(str_char_at(src, look)) { look += 1; }
+                id_start := look;
+                while look < len && is_alnum(str_char_at(src, look)) { look += 1; }
+                if look > id_start {
+                    if str_eq(word, "vec") { sb_append(out_buf, "ktl_vec"); } else { sb_append(out_buf, "ktl_sb"); }
+                    continue;
+                }
+                sb_append(out_buf, word);
+                continue;
+            }
+            if str_eq(word, "loop") { sb_append(out_buf, "while (1)"); continue; }
+
+            // Print and Println
+            if str_eq(word, "println") || str_eq(word, "print") {
+                is_nl := str_eq(word, "println");
+                while pos < len && str_char_at(src, pos) != 40 { pos += 1; }
+                if pos < len && str_char_at(src, pos) == 40 { pos += 1; }
+
+                mut depth := 1;
+                arg_start := pos;
+                while pos < len && depth > 0 {
+                    ch := str_char_at(src, pos);
+                    if ch == 34 { // string literal inside print
+                        pos += 1;
+                        while pos < len && str_char_at(src, pos) != 34 {
+                            if str_char_at(src, pos) == 92 { pos += 1; }
+                            pos += 1;
+                        }
+                    } else if ch == 40 {
+                        depth += 1;
+                    } else if ch == 41 {
+                        depth -= 1;
+                        if depth == 0 { break; }
+                    }
+                    pos += 1;
+                }
+                print_args_str := str_sub(src, arg_start, pos - arg_start);
+                pos += 1; // skip ')'
+
+                emit_print(&out_buf, print_args_str, is_nl, type_map, enum_names);
+                continue;
+            }
+
+            if str_eq(word, "return") {
+                if in_main {
+                    mut look := pos;
+                    while look < len && is_space(str_char_at(src, look)) { look += 1; }
+                    if look < len && str_char_at(src, look) == 59 { // ';'
+                        if main_void {
+                            sb_append(out_buf, "return");
+                        } else {
+                            sb_append(out_buf, "return 0");
+                        }
+                        continue;
+                    }
+                }
+                sb_append(out_buf, "return");
+                continue;
+            }
+
+            // Aggregate type definitions -> C typedefs.
+            if str_eq(word, "struct") || str_eq(word, "enum") {
+                kind := word;
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                ns := pos;
+                while pos < len && is_alnum(str_char_at(src, pos)) { pos += 1; }
+                tname := str_sub(src, ns, pos - ns);
+                if str_eq(kind, "struct") {
+                    struct_names = str_concat(struct_names, str_concat(tname, "|"));
+                } else {
+                    enum_names = str_concat(enum_names, str_concat(tname, "|"));
+                }
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                if pos < len && str_char_at(src, pos) == 123 { pos += 1; }
+                sb_append(out_buf, "typedef ");
+                sb_append(out_buf, kind);
+                sb_append(out_buf, " ");
+                sb_append(out_buf, tname);
+                sb_append(out_buf, " {");
+                def_name = tname;
+                def_depth = 1;
+                in_type_def = true;
+                continue;
+            }
+
+            // Match statement -> a block of if/else-if comparisons.
+            if str_eq(word, "match") {
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                s_start := pos;
+                mut d := 0;
+                while pos < len {
+                    ch := str_char_at(src, pos);
+                    if ch == 40 || ch == 91 { d += 1; }
+                    else if ch == 41 || ch == 93 { d -= 1; }
+                    else if ch == 123 && d == 0 { break; }
+                    pos += 1;
+                }
+                subj := trim_string(str_sub(src, s_start, pos - s_start));
+                if pos < len && str_char_at(src, pos) == 123 { pos += 1; }
+                match_n += 1;
+                match_var = str_concat("_ktl_m", str_int(match_n));
+                match_first = true;
+                in_match = true;
+                match_depth = 1;
+                sb_append(out_buf, " { __auto_type ");
+                sb_append(out_buf, match_var);
+                sb_append(out_buf, " = ");
+                sb_append(out_buf, subj);
+                sb_append(out_buf, "; ");
+                continue;
+            }
+
+            // `case .Variant:` inside a match body.
+            if in_match && str_eq(word, "case") {
+                while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
+                if pos < len && str_char_at(src, pos) == 46 { pos += 1; } // '.'
+                vs := pos;
+                while pos < len && is_alnum(str_char_at(src, pos)) { pos += 1; }
+                vname := str_sub(src, vs, pos - vs);
+                while pos < len && str_char_at(src, pos) != 58 { pos += 1; } // ':'
+                if pos < len { pos += 1; }
+                if match_first {
+                    sb_append(out_buf, "if (");
+                    match_first = false;
+                } else {
+                    sb_append(out_buf, "else if (");
+                }
+                sb_append(out_buf, match_var);
+                sb_append(out_buf, " == ");
+                sb_append(out_buf, vname);
+                sb_append(out_buf, ") ");
+                continue;
+            }
+
+            // Enum variant access: `Color.Green` -> `Green` (flat constants).
+            if str_contains(enum_names, str_concat("|", str_concat(word, "|"))) {
+                mut look := pos;
+                while look < len && is_space(str_char_at(src, look)) { look += 1; }
+                if look < len && str_char_at(src, look) == 46 { // '.'
+                    pos = look + 1;
+                    continue;
+                }
+            }
+
+            // Struct literal: `Point{ ... }` -> `(Point){ ... }`.
+            if str_contains(struct_names, str_concat("|", str_concat(word, "|"))) {
+                mut look := pos;
+                while look < len && is_space(str_char_at(src, look)) { look += 1; }
+                if look < len && str_char_at(src, look) == 123 { // '{'
+                    sb_append(out_buf, "(");
+                    sb_append(out_buf, word);
+                    sb_append(out_buf, ")");
+                    in_init = true;
+                    init_depth = 0;
+                    continue;
+                }
+            }
+
+            // Inside a struct literal, `field = value` needs a C99 designator.
+            if in_init {
+                mut look := pos;
+                while look < len && is_space(str_char_at(src, look)) { look += 1; }
+                if look < len && str_char_at(src, look) == 61 { // '='
+                    if look + 1 >= len || str_char_at(src, look + 1) != 61 {
+                        sb_append_char(out_buf, 46); // '.'
+                    }
+                }
+            }
+
+            // `value.type` on an inferred variable, resolved at compile time.
+            if str_contains(type_map, str_concat("|", str_concat(word, "="))) {
+                mut tlook := pos;
+                while tlook < len && is_space(str_char_at(src, tlook)) { tlook += 1; }
+                if tlook + 5 <= len && str_eq(str_sub(src, tlook, 5), ".type") {
+                    resolved := type_of(type_map, word);
+                    sb_append_char(out_buf, 34); // '"'
+                    sb_append(out_buf, resolved);
+                    sb_append_char(out_buf, 34);
+                    pos = tlook + 5;
+                    continue;
+                }
+            }
+
+            // Reference parameters are C pointers; dereference every use.
+            if str_contains(ref_params, str_concat("|", str_concat(word, "|"))) {
+                sb_append_char(out_buf, 42); // '*'
+                sb_append(out_buf, word);
+                continue;
+            }
+
+            // Normal word
+            sb_append(out_buf, word);
+            continue;
+        }
+
+        // Opening brace '{'
+        if c == 123 { // '{'
+            if in_main {
+                main_depth += 1;
+            }
+            if in_type_def {
+                def_depth += 1;
+            }
+            if in_init {
+                init_depth += 1;
+            }
+            if in_match {
+                match_depth += 1;
+            }
+            if fn_depth > 0 {
+                fn_depth += 1;
+            }
+            sb_append_char(out_buf, 123);
+            pos += 1;
+            continue;
+        }
+
+        // Closing brace '}'
+        if c == 125 { // '}'
+            if in_type_def {
+                def_depth -= 1;
+                if def_depth == 0 {
+                    sb_append(out_buf, "} ");
+                    sb_append(out_buf, def_name);
+                    sb_append(out_buf, ";\n");
+                    in_type_def = false;
+                    pos += 1;
+                    continue;
+                }
+                sb_append_char(out_buf, 125);
+                pos += 1;
+                continue;
+            }
+            if in_match {
+                match_depth -= 1;
+                if match_depth == 0 {
+                    in_match = false;
+                }
+                sb_append_char(out_buf, 125);
+                pos += 1;
+                continue;
+            }
+            if in_init {
+                init_depth -= 1;
+                if init_depth == 0 {
+                    in_init = false;
+                }
+                sb_append_char(out_buf, 125);
+                pos += 1;
+                continue;
+            }
+            if in_main {
+                main_depth -= 1;
+                if main_depth == 0 {
+                    if main_void {
+                        sb_append(out_buf, "}\n");
+                    } else {
+                        sb_append(out_buf, "    return 0;\n}\n");
+                    }
+                    in_main = false;
+                    pos += 1;
+                    continue;
+                }
+            }
+            if fn_depth > 0 {
+                fn_depth -= 1;
+                if fn_depth == 0 {
+                    ref_params = "|";
+                }
+            }
+            sb_append_char(out_buf, 125);
+            pos += 1;
+            continue;
+        }
+
+        sb_append_char(out_buf, c);
+        pos += 1;
+    }
+
+    // In test mode, synthesise the real entry point that drives every
+    // `test` block and reports a pass/fail summary.
+    if test_mode {
+        sb_append(out_buf, "\nint main(int argc, char** argv) {\n");
+        sb_append(out_buf, "    ktl_init_args(argc, argv);\n");
+        sb_append(out_buf, "    ktl_test_mode = 1;\n");
+        sb_append(out_buf, "    int failed_tests = 0;\n");
+        sb_append(out_buf, "    int before = 0;\n");
+        sb_append(out_buf, sb_build(runner_buf));
+        sb_append(out_buf, "    puts(\"\");\n");
+        sb_append(out_buf, "    if (failed_tests == 0) {\n");
+        sb_append(out_buf, "        printf(\"all ");
+        sb_append(out_buf, str_int(test_n));
+        sb_append(out_buf, " test(s) passed\"); puts(\"\");\n");
+        sb_append(out_buf, "        return 0;\n    }\n");
+        sb_append(out_buf, "    printf(\"%d of ");
+        sb_append(out_buf, str_int(test_n));
+        sb_append(out_buf, " test(s) failed\", failed_tests); puts(\"\");\n");
+        sb_append(out_buf, "    return 1;\n}\n");
+    }
+
+    result := sb_build(out_buf);
+    return result;
+}
+
+// -------------------------------------------------------------
+// #strict borrow checking
+// -------------------------------------------------------------
+//
+// Enforces the aliasing rule that #strict exists for: within a single call,
+// the same variable may not be borrowed mutably (`&x`) more than once, and a
+// variable that was never declared `mut` may not be borrowed at all.
+//
+// `&` is only treated as a borrow when it sits in an argument position, i.e.
+// directly after `(` or `,`. That keeps bitwise-and (`count & 1`) from being
+// misread as a borrow.
+//
+// Scope, stated plainly: this is a source-level pass, not a full borrow
+// checker. It does not track lifetimes, moves, scopes or struct fields, and
+// it uses one flat namespace for mutability. It is deliberately conservative
+// and will miss aliasing that a real checker would catch.
+
+// True for the built-in type names, used to tell `mut int x` from `mut x`.
+fn is_type_keyword(str w) -> bool {
+    if str_eq(w, "int") { return true; }
+    if str_eq(w, "str") { return true; }
+    if str_eq(w, "bool") { return true; }
+    if str_eq(w, "float") { return true; }
+    if str_eq(w, "i64") { return true; }
+    if str_eq(w, "u64") { return true; }
+    if str_eq(w, "vec") { return true; }
+    if str_eq(w, "sb") { return true; }
+    return false;
+}
+
+fn check_borrows(str src, str path) -> int {
+    if !str_contains(src, "#strict") {
+        return 0;
+    }
+
+    mut errors := 0;
+    mut line := 1;
+    mut i := 0;
+    n := str_len(src);
+
+    // Names declared `mut`, as "|x|y|".
+    mut str mutables = "|";
+    // Borrows seen so far in the call invocation being scanned.
+    mut str borrows = "|";
+
+    mut in_call := false;
+    mut in_params := false;
+    mut depth := 0;
+    // Distinguishes `fn f(...)` parameter lists from real call sites.
+    mut pending_fn := false;
+    mut fn_name_read := false;
+    // Previous significant character; used to spot argument positions.
+    mut prev := 0;
+
+    while i < n {
+        ch := str_char_at(src, i);
+
+        if ch == 10 {
+            line += 1;
+            i += 1;
+            continue;
+        }
+
+        // String literals: skip so their contents are not parsed as code.
+        if ch == 34 {
+            i += 1;
+            while i < n {
+                sc := str_char_at(src, i);
+                if sc == 92 { i += 2; continue; }
+                if sc == 34 { i += 1; break; }
+                if sc == 10 { line += 1; }
+                i += 1;
+            }
+            prev = 0;
+            continue;
+        }
+
+        // Line comments
+        if ch == 47 && i + 1 < n && str_char_at(src, i + 1) == 47 {
+            while i < n && str_char_at(src, i) != 10 { i += 1; }
+            continue;
+        }
+
+        // Block comments
+        if ch == 47 && i + 1 < n && str_char_at(src, i + 1) == 42 {
+            i += 2;
+            while i + 1 < n {
+                if str_char_at(src, i) == 42 && str_char_at(src, i + 1) == 47 { i += 2; break; }
+                if str_char_at(src, i) == 10 { line += 1; }
+                i += 1;
+            }
+            continue;
+        }
+
+        if ch == 123 { // '{'
+            pending_fn = false;
+            fn_name_read = false;
+            prev = 123;
+            i += 1;
+            continue;
+        }
+
+        if ch == 40 { // '('
+            if pending_fn && fn_name_read {
+                in_params = true;
+                pending_fn = false;
+                fn_name_read = false;
+            } else {
+                in_call = true;
+                borrows = "|";
+            }
+            depth += 1;
+            prev = 40;
+            i += 1;
+            continue;
+        }
+
+        if ch == 41 { // ')'
+            depth -= 1;
+            if depth <= 0 {
+                depth = 0;
+                in_call = false;
+                in_params = false;
+            }
+            prev = 41;
+            i += 1;
+            continue;
+        }
+
+        // `&name`: a mutable borrow in an argument position, or a reference
+        // parameter declaration (`int &a`) inside a `fn` parameter list.
+        // Requiring `(`/`,`/in_params keeps bitwise-and (`count & 1`) from
+        // being misread as a borrow.
+        if ch == 38 && (prev == 40 || prev == 44 || in_params) {
+            mut j := i + 1;
+            while j < n && is_space(str_char_at(src, j)) { j += 1; }
+            ns := j;
+            while j < n && is_alnum(str_char_at(src, j)) { j += 1; }
+            if j > ns && !is_digit(str_char_at(src, ns)) {
+                bname := str_sub(src, ns, j - ns);
+                key := str_concat("|", str_concat(bname, "|"));
+                if in_params {
+                    // A `&` parameter is itself a mutable reference.
+                    mutables = str_concat(mutables, key);
+                } else {
+                    if str_contains(borrows, key) {
+                        println("\x1b[1;31merror\x1b[0m: cannot borrow `%` as mutable more than once at a time", bname);
+                        println("  --> %:%", path, line);
+                        println("   = note: #strict forbids aliased mutable references (&)");
+                        errors += 1;
+                    }
+                    borrows = str_concat(borrows, key);
+                    if !str_contains(mutables, key) {
+                        println("\x1b[1;31merror\x1b[0m: cannot borrow `%` as mutable because it is not declared `mut`", bname);
+                        println("  --> %:%", path, line);
+                        println("   = help: declare it as `mut int % = ...;` or `mut % := ...;`", bname, bname);
+                        errors += 1;
+                    }
+                }
+                i = j;
+                prev = 0;
+                continue;
+            }
+            prev = 38;
+            i += 1;
+            continue;
+        }
+
+        // Identifiers: record `mut` declarations, and note when a `fn`
+        // name has been read so the next `(` is recognised as a parameter list.
+        if is_alpha(ch) {
+            ws := i;
+            while i < n && is_alnum(str_char_at(src, i)) { i += 1; }
+            w := str_sub(src, ws, i - ws);
+
+            if str_eq(w, "fn") {
+                pending_fn = true;
+                fn_name_read = false;
+                prev = 0;
+                continue;
+            }
+
+            if str_eq(w, "mut") {
+                mut k := i;
+                while k < n && is_space(str_char_at(src, k)) { k += 1; }
+                w1s := k;
+                while k < n && is_alnum(str_char_at(src, k)) { k += 1; }
+                if k > w1s {
+                    w1 := str_sub(src, w1s, k - w1s);
+                    mut k2 := k;
+                    while k2 < n && is_space(str_char_at(src, k2)) { k2 += 1; }
+                    w2s := k2;
+                    while k2 < n && is_alnum(str_char_at(src, k2)) { k2 += 1; }
+                    // `mut x := 1` names x; `mut int x = 1` names x too.
+                    mut dname := w1;
+                    if k2 > w2s && is_type_keyword(w1) {
+                        dname = str_sub(src, w2s, k2 - w2s);
+                    }
+                    mutables = str_concat(mutables, str_concat("|", str_concat(dname, "|")));
+                }
+                prev = 0;
+                continue;
+            }
+
+            if pending_fn && !fn_name_read {
+                fn_name_read = true;
+            }
+            prev = 0;
+            continue;
+        }
+
+        if ch != 32 && ch != 9 && ch != 13 {
+            prev = ch;
+        }
+        i += 1;
+    }
+
+    if errors > 0 {
+        println("   = note: % #strict error(s); compilation aborted", errors);
+    }
+    return errors;
+}
+
+// -------------------------------------------------------------
+// Compilation Pipeline Execution
+// -------------------------------------------------------------
+
+// Resolve the directory holding katlin_runtime.h so that projects living
+// outside the Katlin repository still compile. Search order:
+//   1. $KATLIN_STD                 (explicit override)
+//   2. <compiler_dir>/../std       (standard checkout / install layout)
+//   3. ./std                       (running from the repository root)
+fn find_std_dir() -> str {
+    override := env_get("KATLIN_STD");
+    if str_len(override) > 0 {
+        return override;
+    }
+
+    dir := path_dir(args_get(0));
+    cand := str_concat(dir, "/../std");
+    if file_exists(str_concat(cand, "/katlin_runtime.h")) {
+        return cand;
+    }
+    if file_exists("std/katlin_runtime.h") {
+        return "std";
+    }
+    return "std";
+}
+
+fn compile_file(str src_path, str out_binary, bool optimize, bool run_after, str extra_args, str tool_flags) -> int {
+    if !file_exists(src_path) {
+        println("\x1b[1;31merror\x1b[0m: source file not found: %", src_path);
+        return 1;
+    }
+
+    src_content := file_read(src_path);
+    if str_len(src_content) == 0 {
+        println("\x1b[1;31merror\x1b[0m: source file is empty: %", src_path);
+        return 1;
+    }
+
+    // Step 1: Ensure .build directory exists
+    system("mkdir -p .build/bin");
+
+    // Step 2: Transpile to C99
+    base_name := path_base(src_path);
+    c_path := str_concat(".build/", str_concat(base_name, ".c"));
+
+    // Reject aliased mutable borrows before doing any code generation.
+    // No-op unless the file opts in with a `#strict` pragma.
+    if check_borrows(src_content, src_path) > 0 {
+        return 1;
+    }
+
+    c_code := transpile_source(src_content, false);
+
+    // A file with only `test` blocks has no entry point in a normal build.
+    // Say so plainly instead of letting the linker report a missing `main`.
+    if !str_contains(c_code, "int main(int argc") {
+        println("\x1b[1;31merror\x1b[0m: no 'fn main' found in %", src_path);
+        if str_contains(src_content, "test \"") {
+            println("  this file declares test blocks; run it with:");
+            println("    katlin test %", src_path);
+        }
+        return 1;
+    }
+
+    file_write(c_path, c_code);
+
+    // Step 3: Determine output binary path
+    mut str final_bin = out_binary;
+    if str_len(final_bin) == 0 {
+        final_bin = str_concat(".build/bin/", base_name);
+    }
+
+    // Step 4: Assemble optimisation flags.
+    // -march=native is meaningless (and rejected by clang) for a cross target,
+    // so it is only added for a native build.
+    mut str opt_flags = "-O3 -flto";
+    if !optimize {
+        opt_flags = "-O0 -g";
+    } else if str_len(tool_flags) == 0 {
+        opt_flags = str_concat(opt_flags, " -march=native");
+    }
+    if str_len(tool_flags) > 0 {
+        opt_flags = str_concat(opt_flags, tool_flags);
+    }
+
+    // Step 5: Invoke Clang
+    std_dir := find_std_dir();
+    if !file_exists(str_concat(std_dir, "/katlin_runtime.h")) {
+        println("\x1b[1;31merror\x1b[0m: cannot locate katlin_runtime.h");
+        println("  searched: %/katlin_runtime.h", std_dir);
+        println("  set KATLIN_STD to the directory that contains it, e.g.");
+        println("    KATLIN_STD=/path/to/katlin/std katlin build %", src_path);
+        return 1;
+    }
+    inc_flags := str_concat(" -I", str_concat(std_dir, " -I. "));
+    tail_flags := str_concat(" -o ", str_concat(final_bin, str_concat(" ", opt_flags)));
+    cmd := str_concat("clang ", str_concat(c_path, str_concat(inc_flags, tail_flags)));
+    ret := system(cmd);
+
+    if ret != 0 {
+        println("\x1b[1;31merror\x1b[0m: native compilation failed (clang exited with code %)", ret);
+        if str_len(tool_flags) > 0 {
+            println("  hint: cross-compiling needs a target sysroot containing that");
+            println("        platform's libc headers. For example:");
+            println("          katlin build % --target=aarch64-linux-gnu --sysroot=/usr/aarch64-linux-gnu", src_path);
+        }
+        return 1;
+    }
+
+    if run_after {
+        mut str run_cmd = final_bin;
+        if str_len(extra_args) > 0 {
+            run_cmd = str_concat(final_bin, str_concat(" ", extra_args));
+        }
+        return system(run_cmd);
+    }
+
+    println("\x1b[1;32m✓\x1b[0m Successfully built: %", final_bin);
+    return 0;
+}
+
+// -------------------------------------------------------------
+// File discovery helpers (shared by fmt and test)
+// -------------------------------------------------------------
+
+// Write one .ktl path per line into out_file, then return how many there are.
+fn list_ktl_files(str path, str out_file) -> int {
+    is_dir := system(str_concat("test -d ", path));
+    if is_dir == 0 {
+        system(str_concat("find ", str_concat(path, str_concat(" -name '*.ktl' -type f > ", out_file))));
+    } else {
+        file_write(out_file, str_concat(path, "\n"));
+    }
+    listing := file_read(out_file);
+    mut count := 0;
+    mut i := 0;
+    n := str_len(listing);
+    while i < n {
+        if str_char_at(listing, i) == 10 { count += 1; }
+        i += 1;
+    }
+    return count;
+}
+
+// Return the idx-th (0-based) newline-separated line of listing, or "".
+fn listing_line(str listing, int idx) -> str {
+    mut i := 0;
+    mut line := 0;
+    n := str_len(listing);
+    while i < n {
+        if line == idx {
+            ls := i;
+            while i < n && str_char_at(listing, i) != 10 { i += 1; }
+            return str_sub(listing, ls, i - ls);
+        }
+        while i < n && str_char_at(listing, i) != 10 { i += 1; }
+        if i < n { i += 1; }
+        line += 1;
+    }
+    return "";
+}
+
+// -------------------------------------------------------------
+// Formatter (katlin fmt) -- conservative and idempotent
+// -------------------------------------------------------------
+
+// Strips trailing whitespace, collapses runs of blank lines, and guarantees a
+// single trailing newline. Deliberately does NOT reflow operators or touch
+// indentation, so it can never alter string literal contents.
+fn fmt_one_file(str path) -> int {
+    src := file_read(path);
+    if str_len(src) == 0 {
+        return 0;
+    }
+
+    mut out := sb_create(4096);
+    n := str_len(src);
+    mut i := 0;
+    mut blank_run := 0;
+
+    while i < n {
+        ls := i;
+        while i < n && str_char_at(src, i) != 10 { i += 1; }
+        mut le := i;
+        while le > ls {
+            ch := str_char_at(src, le - 1);
+            if ch == 32 || ch == 9 || ch == 13 {
+                le -= 1;
+            } else {
+                break;
+            }
+        }
+        line_len := le - ls;
+        if line_len == 0 {
+            blank_run += 1;
+            if blank_run <= 1 {
+                sb_append_char(out, 10);
+            }
+        } else {
+            blank_run = 0;
+            sb_append(out, str_sub(src, ls, line_len));
+            sb_append_char(out, 10);
+        }
+        if i < n { i += 1; }
+    }
+
+    formatted := sb_build(out);
+    if !str_eq(formatted, src) {
+        file_write(path, formatted);
+        return 1;
+    }
+    return 0;
+}
+
+fn cmd_fmt(str path) -> int {
+    if !file_exists(path) {
+        println("\x1b[1;31merror\x1b[0m: path not found: %", path);
+        return 1;
+    }
+
+    list_file := "/tmp/katlin_fmt_files.txt";
+    count := list_ktl_files(path, list_file);
+    if count == 0 {
+        println("\x1b[1;33mnote\x1b[0m: no .ktl files found under %", path);
+        return 0;
+    }
+
+    listing := file_read(list_file);
+    mut rewritten := 0;
+    mut i := 0;
+    while i < count {
+        f := listing_line(listing, i);
+        if str_len(f) > 0 && fmt_one_file(f) == 1 {
+            rewritten += 1;
+            println("  \x1b[1;33mreformatted\x1b[0m %", f);
+        }
+        i += 1;
+    }
+
+    println("\x1b[1;32m✓\x1b[0m Formatted % file(s), % rewritten", count, rewritten);
+    return 0;
+}
+
+// -------------------------------------------------------------
+// Test Runner (katlin test)
+// -------------------------------------------------------------
+
+// Compile one file in test mode and execute it.
+// Returns 0 = passed, 1 = failed, -1 = file declares no test blocks.
+fn run_test_file(str path) -> int {
+    src := file_read(path);
+    if str_len(src) == 0 {
+        return -1;
+    }
+
+    c_code := transpile_source(src, true);
+    if !str_contains(c_code, "ktl_test_0") {
+        return -1;
+    }
+
+    system("mkdir -p .build/bin");
+    base := path_base(path);
+    c_path := str_concat(".build/", str_concat(base, "_test.c"));
+    bin_path := str_concat(".build/bin/", str_concat(base, "_test"));
+    file_write(c_path, c_code);
+
+    std_dir := find_std_dir();
+    cmd := str_concat("clang ", str_concat(c_path, str_concat(" -I", str_concat(std_dir, str_concat(" -I. -O1 -o ", bin_path)))));
+    if system(cmd) != 0 {
+        println("  \x1b[1;31mcompilation failed\x1b[0m");
+        return 1;
+    }
+
+    println("\n\x1b[1;36m%\x1b[0m", path);
+    return system(bin_path);
+}
+
+fn cmd_test(str path) -> int {
+    if !file_exists(path) {
+        println("\x1b[1;31merror\x1b[0m: path not found: %", path);
+        return 1;
+    }
+
+    list_file := "/tmp/katlin_test_files.txt";
+    count := list_ktl_files(path, list_file);
+    if count == 0 {
+        println("\x1b[1;33mnote\x1b[0m: no .ktl files found under %", path);
+        return 0;
+    }
+
+    listing := file_read(list_file);
+    mut suites := 0;
+    mut failed := 0;
+    mut i := 0;
+    while i < count {
+        f := listing_line(listing, i);
+        if str_len(f) > 0 {
+            r := run_test_file(f);
+            if r >= 0 {
+                suites += 1;
+                if r != 0 { failed += 1; }
+            }
+        }
+        i += 1;
+    }
+
+    println("");
+    if suites == 0 {
+        println("\x1b[1;33mnote\x1b[0m: no test blocks found under %", path);
+        return 0;
+    }
+    if failed == 0 {
+        println("\x1b[1;32m✓\x1b[0m % test suite(s) passed", suites);
+        return 0;
+    }
+    println("\x1b[1;31m✗\x1b[0m % of % test suite(s) failed", failed, suites);
+    return 1;
+}
+
+// -------------------------------------------------------------
+// Main CLI Driver
+// -------------------------------------------------------------
+
+fn main {
+    total := args_count();
+    if total < 2 {
+        print_help();
+        exit(0);
+    }
+
+    cmd := args_get(1);
+
+    if str_eq(cmd, "version") || str_eq(cmd, "--version") || str_eq(cmd, "-v") {
+        print_version();
+        exit(0);
+    }
+
+    if str_eq(cmd, "help") || str_eq(cmd, "--help") || str_eq(cmd, "-h") {
+        print_help();
+        exit(0);
+    }
+
+    if str_eq(cmd, "init") {
+        mut str proj_name = "";
+        if total >= 3 { proj_name = args_get(2); }
+        exit(cmd_init(proj_name));
+    }
+
+    if str_eq(cmd, "fmt") {
+        mut str fmt_path = ".";
+        if total >= 3 { fmt_path = args_get(2); }
+        exit(cmd_fmt(fmt_path));
+    }
+
+    if str_eq(cmd, "test") {
+        mut str test_path = ".";
+        if total >= 3 { test_path = args_get(2); }
+        exit(cmd_test(test_path));
+    }
+
+    if str_eq(cmd, "run") {
+        if total < 3 {
+            println("\x1b[1;31merror\x1b[0m: no input file specified for 'run'");
+            exit(1);
+        }
+        src_file := args_get(2);
+        mut str extra = "";
+        for i in 3..total {
+            extra = str_concat(extra, str_concat(args_get(i), " "));
+        }
+        exit(compile_file(src_file, "", true, true, extra, ""));
+    }
+
+    if str_eq(cmd, "build") {
+        if total < 3 {
+            println("\x1b[1;31merror\x1b[0m: no input file specified for 'build'");
+            exit(1);
+        }
+        src_file := args_get(2);
+        mut str out_bin = "";
+        mut optimize := true;
+        mut str target = "";
+        mut str sysroot = "";
+
+        mut i := 3;
+        while i < total {
+            arg := args_get(i);
+            if str_eq(arg, "-o") && i + 1 < total {
+                out_bin = args_get(i + 1);
+                i += 2;
+            } else if str_eq(arg, "--target") && i + 1 < total {
+                target = args_get(i + 1);
+                i += 2;
+            } else if str_starts_with(arg, "--target=") {
+                target = str_sub(arg, 9, str_len(arg) - 9);
+                i += 1;
+            } else if str_eq(arg, "--sysroot") && i + 1 < total {
+                sysroot = args_get(i + 1);
+                i += 2;
+            } else if str_starts_with(arg, "--sysroot=") {
+                sysroot = str_sub(arg, 10, str_len(arg) - 10);
+                i += 1;
+            } else if str_eq(arg, "--debug") {
+                optimize = false;
+                i += 1;
+            } else if str_eq(arg, "--release") {
+                optimize = true;
+                i += 1;
+            } else {
+                i += 1;
+            }
+        }
+
+        // Assemble cross-compilation flags. Kept as one string so the
+        // "is this a cross build?" question is a simple emptiness check.
+        mut str tool_flags = "";
+        if str_len(target) > 0 {
+            tool_flags = str_concat(" --target=", target);
+        }
+        if str_len(sysroot) > 0 {
+            tool_flags = str_concat(tool_flags, str_concat(" --sysroot=", sysroot));
+        }
+
+        exit(compile_file(src_file, out_bin, optimize, false, "", tool_flags));
+    }
+
+    // Fallback: if user specified 'katlin file.ktl', default to run
+    if file_exists(cmd) {
+        exit(compile_file(cmd, "", true, true, "", ""));
+    }
+
+    println("\x1b[1;31merror\x1b[0m: unknown command '%'", cmd);
+    print_help();
+    exit(1);
+}

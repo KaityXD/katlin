@@ -5,7 +5,7 @@ from typing import List, Optional, Tuple, Any
 from src.lexer import Token, TokenType
 from src.diagnostics import KatlinParseError
 from src.ast_nodes import (
-    Program, FunctionDef, Parameter, VarDecl, AssignStmt, ReturnStmt,
+    Program, FunctionDef, Parameter, VarDecl, AssignStmt, ReturnStmt, BreakStmt, ContinueStmt,
     PrintStmt, CallExpr, ChainedCall, IfStmt, WhileStmt, LoopStmt, ForStmt,
     RawBlock, BinaryOp, UnaryOp, Literal, Identifier, ExprStmt, IndexAssign, IndexExpr,
     StructField, StructDef, StructInit, MemberAccess, EnumDef, OrExpr, MatchBranch, MatchStmt, TestBlock, ASTNode
@@ -15,6 +15,7 @@ class Parser:
     def __init__(self, tokens: List[Token]):
         self.tokens = tokens
         self.pos = 0
+        self.struct_names = {tokens[i + 1].value for i in range(len(tokens) - 1) if tokens[i].type == TokenType.STRUCT and tokens[i + 1].type == TokenType.IDENT}
 
     def peek(self, offset: int = 0) -> Token:
         idx = self.pos + offset
@@ -307,6 +308,16 @@ class Parser:
             self.skip_semicolons()
             return ReturnStmt(value=val, guard_condition=guard, line=tok.line, col=tok.col)
 
+        # Break statement
+        if self.match(TokenType.BREAK):
+            self.skip_semicolons()
+            return BreakStmt(line=tok.line, col=tok.col)
+
+        # Continue statement
+        if self.match(TokenType.CONTINUE):
+            self.skip_semicolons()
+            return ContinueStmt(line=tok.line, col=tok.col)
+
         # Print / Println statement
         if tok.type in (TokenType.PRINTLN, TokenType.PRINT):
             is_nl = (tok.type == TokenType.PRINTLN)
@@ -402,7 +413,12 @@ class Parser:
             self.consume(TokenType.RBRACE)
 
             elifs = []
-            while self.match(TokenType.ELIF):
+            while self.peek().type == TokenType.ELIF or (self.peek().type == TokenType.ELSE and self.peek(1).type == TokenType.IF):
+                if self.peek().type == TokenType.ELSE:
+                    self.advance()
+                    self.advance()
+                else:
+                    self.advance()
                 elif_cond = self.parse_expression()
                 self.match(TokenType.COLON)
                 self.consume(TokenType.LBRACE)
@@ -641,7 +657,7 @@ class Parser:
                 return base_call
 
             # Struct initialization? e.g. Player{ id = 1, name = "Kaitlyn" }
-            if self.peek().type == TokenType.LBRACE and self.peek(1).type == TokenType.IDENT and self.peek(2).type in (TokenType.ASSIGN, TokenType.COLON):
+            if (name in self.struct_names or (len(name) > 0 and name[0].isupper())) and self.peek().type == TokenType.LBRACE and self.peek(1).type == TokenType.IDENT and self.peek(2).type in (TokenType.ASSIGN, TokenType.COLON):
                 self.advance() # {
                 fields = []
                 while self.peek().type != TokenType.RBRACE and self.peek().type != TokenType.EOF:

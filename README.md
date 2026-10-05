@@ -1,169 +1,298 @@
 # The Katlin Programming Language
-**Fast as C/C++. Flexible as your thoughts. Statically typed. Zero Garbage Collection.**
+
+**Statically typed. Compiles to native binaries. Zero garbage collection.**
+
+Katlin (`.ktl`) is a systems programming language that compiles to native
+machine code through a C99 backend. The compiler itself is written in Katlin
+and bootstraps to a single native binary with no interpreter runtime.
 
 ---
 
-## ⚡ What is Katlin?
+## Status
 
-Katlin (`.ktl`) is a modern, bare-metal systems programming language combining the raw speed of C and C++ with the cleanest, most flexible syntax possible. It compiles directly to native static binaries with Clang `-O3 -flto` optimizations and provides a 3-tier memory model (Stack, Arena, Heap) with **Zero mandatory garbage collection**.
+This is an early-stage language implementation, published so the design is
+readable and hackable. It is honest about what works:
 
-### Key Language Features:
-- **`fn` inside `fn` with Fluent Dot-Chaining**: Write `idkbro(timeout = 10).start()` without class or builder boilerplate. Flattens into registers via SROA.
-- **Parentheses-Optional Functions**: Clean parameterless functions `fn fuck { ... }` or `fn main { ... }`.
-- **Flexible Declarations**: Type-first (`int score = 100;`), inferred dynamic typing (`total := a + b;`), and explicit struct types (`Point pt = Point{ x = 1, y = 2 }`).
-- **Choose Your Mutability**: Both C/Rust-style `int &sum = 0;` AND `mut int sum = 0;`.
-- **The Memory Dial**:
-  - Regular safe mode.
-  - `#strict` borrow-checked mode (detects aliased mutable references at compile-time).
-  - `raw { ... }` blocks with raw pointer manipulation.
-- **First-Class Arena Bump Allocators**: Allocate millions of micro-objects and wipe them in a single CPU cycle.
-- **Zero-Brace `%` Format Strings**: `println("Score: %, Name: %", score, name)`.
-- **Postfix Guard Clauses**: `return if timeout <= 0;`.
-- **Ranges with Custom Step**: `for i in 0..100 step 10 { ... }`.
-- **Match & Tagged Enums**: Pattern matching on enum variants (`match state { case .Idle: ... }`).
-- **First-Class Unit Tests**: Write `test "description" { assert(...); }` blocks right in your source files and execute with `katlin test`.
+| Area | State |
+| :--- | :--- |
+| Compiler | Self-hosted. `bin/katlin` is a native binary built from `compiler/main.ktl` |
+| Backend | Emits C99, compiled with clang `-O3 -flto`. Not a direct machine-code emitter |
+| Core language | Functions, structs, enums, `match`, loops, references, inference — working |
+| Toolchain | `run`, `build`, `test`, `fmt`, `init`, cross-compilation — working |
+| Memory | Arena, vector, string builder, raw heap buffers — working, no GC |
+| `#strict` borrow checking | **Enforced** for aliased `&` borrows and borrows of immutable variables |
+| Advanced syntax | Default/named arguments, inner functions, `or` fallbacks — **not implemented** |
 
----
-
-## 🏎️ Verified Benchmarks
-
-| Benchmark | Language / Backend | Operations | Time | Speedup vs Python |
-| :--- | :--- | :--- | :--- | :--- |
-| **0 to 1,000,000,000 Counter** | Katlin (`-O3`) | 1 Billion ops + checksum | **0.002287 s** | **~22,000x** |
-| **100 MB RAM Allocation & Write** | Katlin Raw Memory | 25,000,000 integers | **0.013098 s** | **7.6 GB/sec** (0 GC overhead) |
-| **Arena Bump-Allocator** | Katlin Arena | 100,000 allocations | **< 1 µs** | Instant 1-cycle bulk wipe |
+See [Feature support](#feature-support) for the full matrix, and
+[`examples/unsupported/`](examples/unsupported/README.md) for programs that
+need the missing features.
 
 ---
 
-## 🛠️ Katlin Toolchain CLI
+## Quick start
 
-Katlin ships with a single unified CLI (`bin/katlin`):
-
-### 1. Run Katlin Code Immediately
 ```bash
-katlin run examples/idkbro.ktl
+git clone <this-repo> && cd katlin
+
+./bin/katlin run examples/tour.ktl      # compile and run immediately
+./bin/katlin build examples/tour.ktl -o /tmp/tour && /tmp/tour
+./bin/katlin test examples/             # run all `test` blocks
+./bin/katlin fmt examples/              # format sources
+./bin/katlin init my_project            # scaffold a new project
 ```
 
-### 2. Build Native Static Executable
-```bash
-katlin build examples/idkbro.ktl -o myapp
-./myapp
-```
+`bin/katlin` is committed and ready to run. To rebuild it from source:
 
-### 3. Cross-Compile to Other Architectures
 ```bash
-# Windows
-katlin build src/main.ktl --target=x86_64-w64-mingw32 -o app.exe
-
-# ARM64 / Linux
-katlin build src/main.ktl --target=aarch64-linux-gnu -o app_arm64
-```
-
-### 4. Run Built-in Test Suites
-Finds and runs all `test "name" { ... }` blocks across your project:
-```bash
-katlin test
-```
-
-### 5. Auto-Format Code
-```bash
-katlin fmt .
-```
-
-### 6. Scaffold a New Project
-```bash
-katlin init my_project
-cd my_project
-katlin run src/main.ktl
+./build.sh              # bootstrap via the Python compiler in src/
+./build.sh --verify     # additionally check the compiler can rebuild itself
 ```
 
 ---
 
-## 📦 Standard Library (`std`)
+## The language
 
-Katlin includes an embedded bare-metal standard library with zero runtime bloat:
+```katlin
+struct Point {
+    int x;
+    int y;
+}
 
-- **Memory (`std/katlin_runtime.h`)**:
-  - `arena_create(capacity)`
-  - `arena_alloc(arena, size)`
-  - `arena_reset(arena)` (1 CPU cycle bulk wipe)
-  - `arena_destroy(arena)`
-  - `alloc_ints(count)` / `free_ints(ptr)`
-- **Dynamic Vector**:
-  - `vec_create(cap)`
-  - `vec_push(vec, val)`
-  - `vec_get(vec, idx)`
-  - `vec_set(vec, idx, val)`
-  - `vec_len(vec)`
-  - `vec_free(vec)`
-- **File I/O**:
-  - `file_read(path)` -> `str`
-  - `file_write(path, text)` -> `bool`
-  - `file_append(path, text)` -> `bool`
-  - `file_exists(path)` -> `bool`
-- **Strings**:
-  - `str_len(s)` -> `int`
-  - `str_eq(a, b)` -> `bool`
-  - `str_concat(a, b)` -> `str`
-- **Math & Profiling**:
-  - `abs(x)`, `min(a, b)`, `max(a, b)`
-  - `time_now()` -> high-resolution timestamp in seconds
-  - `get_ram_mb()` -> live Resident Set Size physical RAM consumption
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+fn color_code(Color c) -> int {
+    mut int code = 0;
+    match c {
+        case .Red:   { code = 1; }
+        case .Green: { code = 2; }
+        case .Blue:  { code = 3; }
+    }
+    return code;
+}
+
+fn swap(int &a, int &b) {     // `&` parameters really write through
+    int temp = a;
+    a = b;
+    b = temp;
+}
+
+fn main {
+    mut answer := 42;                 // inferred typing
+    println("answer: % (%)", answer, answer.type);   // .type resolved at compile time
+
+    p := Point{ x = 3, y = 4 };
+    println("dist2 = %", p.x * p.x + p.y * p.y);
+
+    println("green => %", color_code(Color.Green));
+
+    mut a := 1;
+    mut b := 2;
+    swap(&a, &b);
+    println("swapped: % %", a, b);
+
+    for i in 0..10 step 3 {
+        println("step: %", i);
+    }
+}
+```
+
+More in [`examples/tour.ktl`](examples/tour.ktl) and
+[`SYNTAX.md`](SYNTAX.md).
 
 ---
 
-## 🎨 Visual Studio Code Extension
+## Feature support
 
-Katlin includes full syntax highlighting, bracket matching, and snippets for VS Code.
+Verified by `tests/run_tests.sh` against the shipped binary.
 
-To install into your local VS Code editor:
-```bash
-cp -r editors/vscode ~/.vscode/extensions/katlin-lang-0.1.0
-```
-Restart VS Code and all `.ktl` files will have syntax coloring and snippets.
+### Working
+
+- `fn`, `fn main`, return-type annotations, parentheses-optional declarations
+- Inferred typing with `:=`, including compile-time `value.type`
+- Explicit types: `int`, `i64`, `str`, `bool`, `float`, `vec`, `sb`
+- `mut` declarations, both typed (`mut int x = 1`) and inferred (`mut x := 1`)
+- `if` / `else`, `while`, `for i in a..b step n`, `loop`
+- Compound assignment (`+=`, `-=`, `*=`, `/=`)
+- `struct` definitions, `Point{ x = 1, y = 2 }` literals, member access
+- `enum` definitions, `Color.Green` variants, `match` with `case .Variant:`
+- Reference parameters (`int &a`) — writes propagate to the caller
+- Address-of `&x` and dereference `*p`, including `*p = value`
+- `#strict` borrow checking: rejects aliased mutable borrows and borrows of
+  immutable variables, with line/column diagnostics (see below)
+- `println` / `print` with `%` placeholders (type-generic, no format guessing)
+- `test "name" { ... }` blocks and the `katlin test` runner
+- Runtime: arena allocator, dynamic vector, string builder, string helpers,
+  file I/O, CLI args, `min`/`max`/`abs`, timing and RSS measurement
+- Toolchain flags: `--debug`, `--release`, `--target=<triple>`, `--sysroot=<dir>`
+
+### Not implemented
+
+| Feature | Behaviour today |
+| :--- | :--- |
+| Default arguments | C backend error |
+| Named arguments | C backend error |
+| Inner functions / fluent `.start()` chaining | C backend error |
+| `or` fallback expressions | C backend error |
+| Reference struct fields (`int &balance`) | C backend error |
+| Local `int &x = 0` mutability syntax | C backend error |
+| `*mut T` / `*const T` pointer types | C backend error |
+| `raw { ... }` blocks | C backend error |
 
 ---
 
-## 🧪 Running Automated Tests
+## `#strict` borrow checking
 
-Run the full Python-based compiler test suite:
-```bash
-python3 -m unittest discover tests/
+A file-level `#strict` pragma turns on compile-time aliasing checks. Two rules
+are enforced, before any code is generated:
+
+1. **No aliased mutable borrows.** Within one call, the same variable may not
+   be borrowed with `&` twice.
+2. **No borrowing immutables.** A variable declared without `mut` cannot be
+   passed as `&x`.
+
+```katlin
+#strict
+
+fn swap(int &a, int &b) { int t = a; a = b; b = t; }
+
+fn main {
+    mut int x = 1;
+    mut int y = 2;
+    swap(&x, &y);      // OK: two distinct variables
+    swap(&x, &x);      // error: cannot borrow `x` as mutable more than once
+}
 ```
 
-Run Katlin's native test suites:
+```
+$ katlin build examples/borrow_fail.ktl
+error: cannot borrow `x` as mutable more than once at a time
+  --> examples/borrow_fail.ktl:15
+   = note: #strict forbids aliased mutable references (&)
+```
+
+Runnable examples: [`examples/strict_borrows.ktl`](examples/strict_borrows.ktl)
+(passes), [`examples/borrow_fail.ktl`](examples/borrow_fail.ktl) and
+[`examples/borrow_immutable.ktl`](examples/borrow_immutable.ktl) (rejected).
+
+**Scope, stated plainly.** This is a source-level pass, not a full borrow
+checker. It does not track lifetimes, moves, scopes, or struct fields, and it
+uses one flat namespace for mutability. `&` is only treated as a borrow in an
+argument or parameter position, so bitwise-and (`count & 1`) is never
+misread. Treat it as a guard against the common aliasing mistake, not as
+Rust-grade safety.
+
+The Python bootstrap compiler in `src/` implements several of these
+(default/named arguments, inner functions, a narrow aliased-`&` check, `or`
+fallbacks). The two implementations are not yet at parity.
+
+---
+
+## Architecture
+
+```
+compiler/main.ktl   Katlin source of the compiler (self-hosted)
+        |
+        |  bin/katlin_py build  (Python bootstrap, src/)
+        v
+   bin/katlin       native binary, no runtime dependency
+        |
+        |  transpiles .ktl -> C99, then invokes clang
+        v
+   native executable
+```
+
+The native compiler scans Katlin source and emits C99, which clang optimises
+with `-O3 -flto -march=native`. `std/katlin_runtime.h` provides the runtime as
+`static inline` C, so the generated program is self-contained.
+
+Two details worth knowing:
+
+- **Compile-time, not runtime, type info.** `value.type` on a `:=` variable is
+  resolved during transpilation and emitted as a string literal.
+- **`%` placeholders are type-generic.** `println("x = %", v)` expands to a
+  `_Generic` dispatch in C rather than a guessed `printf` format specifier, so
+  a mismatch cannot silently print garbage.
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the longer design notes.
+
+---
+
+## Benchmarks
+
+Measured on one x86-64 machine, `-O3 -flto -march=native`:
+
+| Benchmark | Operations | `--release` | `--debug` |
+| :--- | :--- | :--- | :--- |
+| Integer counter with checksum | 1,000,000,000 | 0.0021 s | 1.78 s |
+| Heap buffer fill | 25,000,000 ints (100 MB) | ~0.009 s | — |
+| Arena alloc + bulk reset | 100,000 objects | < 1 µs | — |
+
+The counter result is real but worth reading carefully: the loop genuinely
+executes a billion iterations (the checksum is verified), and clang vectorises
+it four-wide and unrolls it 64×, so ~4 million loop passes do the work of a
+billion scalar ones. The `--debug` column shows the same loop without
+vectorisation. These are compiler-throughput numbers, not a claim about the
+language being magically faster than C.
+
+Reproduce with:
+
 ```bash
-./bin/katlin test examples/
+./bin/katlin run examples/count_billion.ktl
+./bin/katlin build examples/count_billion.ktl --debug -o /tmp/cb_dbg && /tmp/cb_dbg
 ```
 
 ---
 
-## 📁 Repository Structure
+## Testing
+
+```bash
+./tests/run_tests.sh                    # 28 end-to-end tests, shipped binary
+python3 -m unittest discover tests/     # 14 unit tests, Python bootstrap
+```
+
+`tests/run_tests.sh` is the one that matters for releases: it covers CLI exit
+codes, language features, the test runner, the formatter, scaffolding, and
+every file in `examples/`. CI runs both suites plus a formatter idempotency
+check.
+
+---
+
+## Repository layout
 
 ```
-├── bin/
-│   └── katlin                  # Katlin CLI Tool
-├── src/
-│   ├── ast_nodes.py            # AST Node Definitions
-│   ├── lexer.py                # Tokenizer (Hex, Binary, Pragmas, Keywords)
-│   ├── parser.py               # Recursive Descent Parser
-│   ├── semantics.py            # Semantic Analyzer & #strict Borrow Checker
-│   ├── codegen.py              # C99/LLVM Native Code Generator & Test Runner
-│   ├── formatter.py            # Source Code Formatter (katlin fmt)
-│   └── compiler.py             # Compiler Driver (run, build, test, fmt, init)
-├── std/
-│   └── katlin_runtime.h        # Bare-Metal Runtime & Standard Library
-├── editors/
-│   └── vscode/                 # VS Code Language Extension (.tmLanguage.json)
-├── tests/
-│   └── test_compiler.py        # Automated Compiler Unit Tests
-├── examples/
-│   ├── idkbro.ktl              # Fluent chained calls & mutability showcase
-│   ├── count_billion.ktl       # 1 Billion operation speed benchmark
-│   ├── memory_test.ktl         # 100 MB RAM allocation & throughput test
-│   ├── arena_test.ktl          # 1-cycle bulk arena wipe benchmark
-│   ├── stdlib_showcase.ktl     # File I/O, Strings, Vectors showcase
-│   └── core_tests.ktl          # Structs, Enums, and Core Language Tests
-├── SYNTAX.md                   # Full Katlin Syntax Guide
-└── ARCHITECTURE.md             # Compiler Internals & Memory Architecture
+bin/katlin              Bootstrapped native compiler (committed)
+bin/katlin_py           Python bootstrap driver
+compiler/main.ktl       Compiler source, written in Katlin
+src/                    Python bootstrap compiler (lexer, parser, codegen)
+std/katlin_runtime.h    Runtime + standard library, as static inline C
+examples/               Working programs; unsupported/ holds the rest
+tests/run_tests.sh      End-to-end tests for the shipped binary
+tests/test_compiler.py  Unit tests for the Python bootstrap
+build.sh                Bootstrap script (./build.sh --verify)
+editors/vscode/         Syntax highlighting and snippets
+SYNTAX.md               Language reference
+ARCHITECTURE.md         Design notes
 ```
+
+---
+
+## Roadmap
+
+1. Replace the character-level scanner with a real lexer/parser/AST in
+   `compiler/main.ktl`. Most missing features are blocked on this.
+2. Deepen `#strict`: lifetime and move tracking, scope-aware mutability, and
+   struct field borrows. Today it covers aliased `&` borrows only.
+3. Argument defaults and named arguments.
+4. Inner functions with scope capture.
+5. Incremental compilation — avoid re-running clang when the generated C is
+   unchanged.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,24 @@
+// examples/borrow_immutable.ktl
+// NEGATIVE example for the #strict borrow checker.
+//
+// `counter` is declared with `:=`, which makes it immutable. Borrowing it
+// mutably with `&counter` is rejected: you cannot take a mutable reference to
+// something that was never declared `mut`.
+//
+// This file is expected to FAIL to compile. It exists so the diagnostic is
+// covered by tests.
+//
+//   $ katlin build examples/borrow_immutable.ktl
+//   error: cannot borrow `counter` as mutable because it is not declared `mut`
+
+#strict
+
+fn bump(int &a) {
+    a = a + 1;
+}
+
+fn main {
+    counter := 10;          // immutable: no `mut`
+    bump(&counter);         // rejected
+    println("%", counter);
+}

@@ -1,0 +1,68 @@
+// examples/tour.ktl
+// A single runnable tour of everything the native compiler supports today.
+// Run it with:  katlin run examples/tour.ktl
+
+struct Point {
+    int x;
+    int y;
+}
+
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+fn color_code(Color c) -> int {
+    mut int code = 0;
+    match c {
+        case .Red: { code = 1; }
+        case .Green: { code = 2; }
+        case .Blue: { code = 3; }
+    }
+    return code;
+}
+
+fn swap(int &a, int &b) {
+    int temp = a;
+    a = b;
+    b = temp;
+}
+
+fn distance_sq(Point p) -> int {
+    return p.x * p.x + p.y * p.y;
+}
+
+fn main {
+    println("=== Katlin language tour ===");
+
+    // Inferred typing with ':=' ; .type is resolved at compile time.
+    mut answer := 42;
+    mut ratio := 1.5;
+    mut label := "katlin";
+    println("answer: % (%)", answer, answer.type);
+    println("ratio:  % (%)", ratio, ratio.type);
+    println("label:  % (%)", label, label.type);
+
+    // Structs and member access.
+    origin := Point{ x = 3, y = 4 };
+    println("point: (%, %) dist2=%", origin.x, origin.y, distance_sq(origin));
+
+    // Enums and match.
+    println("green => %", color_code(Color.Green));
+
+    // Mutable references really write through.
+    mut left := 1;
+    mut right := 2;
+    swap(&left, &right);
+    println("swapped: % %", left, right);
+
+    // Ranges with a step.
+    mut total := 0;
+    for i in 0..10 step 3 {
+        total += i;
+    }
+    println("sum of 0,3,6,9 = %", total);
+
+    println("=== done ===");
+}

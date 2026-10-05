@@ -16,7 +16,7 @@ fn test_strings {
 fn test_vectors {
     println("\n--- Testing Dynamic Vector ---");
     mut v := vec_create(4);
-    
+
     // Push 10 numbers
     for i in 0..10 {
         vec_push(v, i * 10);

@@ -12,7 +12,6 @@ fn benchmark {
 
     while count < 1000000000 {
         checksum += (count & 1);
-	println("%", count);
         count += 1;
     }
 

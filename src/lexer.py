@@ -223,9 +223,22 @@ class Lexer:
                         esc = self.advance()
                         if esc == "n": s_val += "\n"
                         elif esc == "t": s_val += "\t"
+                        elif esc == "r": s_val += "\r"
+                        elif esc == "0": s_val += "\0"
+                        elif esc == "e": s_val += "\x1b"
+                        elif esc == "x":
+                            hex_str = ""
+                            if self.peek() in "0123456789abcdefABCDEF":
+                                hex_str += self.advance()
+                            if self.peek() in "0123456789abcdefABCDEF":
+                                hex_str += self.advance()
+                            if hex_str:
+                                s_val += chr(int(hex_str, 16))
+                            else:
+                                s_val += "\\x"
                         elif esc == '"': s_val += '"'
                         elif esc == "\\": s_val += "\\"
-                        else: s_val += esc
+                        else: s_val += "\\" + esc
                     else:
                         s_val += self.advance()
                 if self.peek() == '"':

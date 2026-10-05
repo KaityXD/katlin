@@ -3,7 +3,7 @@
 
 from typing import List, Dict, Optional, Tuple, Any
 from src.ast_nodes import (
-    Program, FunctionDef, Parameter, VarDecl, AssignStmt, ReturnStmt,
+    Program, FunctionDef, Parameter, VarDecl, AssignStmt, ReturnStmt, BreakStmt, ContinueStmt,
     PrintStmt, CallExpr, ChainedCall, IfStmt, WhileStmt, LoopStmt, ForStmt,
     RawBlock, BinaryOp, UnaryOp, Literal, Identifier, ExprStmt, IndexAssign, IndexExpr,
     StructField, StructDef, StructInit, MemberAccess, EnumDef, OrExpr, MatchBranch, MatchStmt, TestBlock, ASTNode
@@ -19,6 +19,7 @@ TYPE_MAP = {
     "byte": "ktl_byte",
     "vec": "ktl_vec",
     "arena": "ktl_arena",
+    "sb": "ktl_sb",
 }
 
 class CodeGenerator:
@@ -44,6 +45,12 @@ class CodeGenerator:
             self.output.append(f"{self.indent()}{line}")
         else:
             self.output.append("")
+
+    def to_ptr(self, code: str) -> str:
+        clean = code.strip()
+        if clean in self.ref_params or clean.startswith("&") or clean.startswith("*"):
+            return clean
+        return f"&{clean}"
 
     def generate(self) -> str:
         # Pre-scan functions, enums, structs
@@ -260,6 +267,8 @@ class CodeGenerator:
             sig = f"static {ret_type} {func.name}({params_str})"
         self.emit(f"{sig} {{")
         self.indent_level += 1
+        if is_main:
+            self.emit("ktl_init_args(argc, argv);")
 
         for i, stmt in enumerate(func.body):
             # If function returns a value and last statement is an ExprStmt, emit as return
@@ -287,18 +296,28 @@ class CodeGenerator:
         if isinstance(expr, CallExpr):
             if expr.callee in ("time_now", "get_ram_mb"):
                 return "float"
-            if expr.callee in ("file_read", "str_concat"):
+            if expr.callee in ("file_read", "str_concat", "args_get", "str_sub", "str_from_char", "str_int", "path_base", "path_dir", "sb_build"):
                 return "str"
-            if expr.callee in ("file_write", "file_append", "file_exists", "str_eq", "assert"):
+            if expr.callee in ("file_write", "file_append", "file_exists", "str_eq", "assert", "str_starts_with", "str_ends_with", "str_contains"):
                 return "bool"
             if expr.callee in ("vec_get",):
                 return "i64"
-            if expr.callee in ("str_len", "math_abs", "abs", "math_min", "min", "math_max", "max", "vec_len", "alloc_ints"):
+            if expr.callee in ("str_len", "str_char_at", "str_index_of", "parse_int", "args_count", "system", "math_abs", "abs", "math_min", "min", "math_max", "max", "vec_len", "alloc_ints"):
                 return "int"
             if expr.callee == "vec_create":
                 return "vec"
             if expr.callee == "arena_create":
                 return "arena"
+            if expr.callee == "sb_create":
+                return "sb"
+            # User-defined functions: resolve the declared return type. Without
+            # this every call to a project-local function fell through to the
+            # "int" guess below, which silently picked the wrong printf
+            # specifier for `str`/`float` returns and printed garbage.
+            target = self.functions.get(expr.callee)
+            if target is not None and target.return_type:
+                return target.return_type
+            return "int"
         if isinstance(expr, BinaryOp):
             l_t = self.infer_expr_type(expr.left)
             r_t = self.infer_expr_type(expr.right)
@@ -321,6 +340,8 @@ class CodeGenerator:
     def generate_statement(self, stmt: ASTNode, context_prefix: str = "", valid_fields: Optional[Dict[str, str]] = None):
         if isinstance(stmt, ReturnStmt):
             val_code = self.generate_expr(stmt.value, context_prefix, valid_fields) if stmt.value else ""
+            if self.current_func and self.current_func.name == "main" and not val_code:
+                val_code = "0"
             if stmt.guard_condition:
                 cond_code = self.generate_expr(stmt.guard_condition, context_prefix, valid_fields)
                 if val_code:
@@ -332,6 +353,12 @@ class CodeGenerator:
                     self.emit(f"return {val_code};")
                 else:
                     self.emit("return;")
+
+        elif isinstance(stmt, BreakStmt):
+            self.emit("break;")
+
+        elif isinstance(stmt, ContinueStmt):
+            self.emit("continue;")
 
         elif isinstance(stmt, PrintStmt):
             self.generate_print(stmt, context_prefix, valid_fields)
@@ -513,9 +540,9 @@ class CodeGenerator:
             if i + 1 < len(fmt_parts):
                 new_fmt += fmt_parts[i + 1]
 
-        # Escape newlines
+        # Escape newlines and ANSI escapes
         new_fmt += nl
-        new_fmt_clean = new_fmt.replace("\n", "\\n")
+        new_fmt_clean = new_fmt.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t").replace("\x1b", "\\033")
 
         if arg_codes:
             args_str = ", ".join(arg_codes)
@@ -526,7 +553,7 @@ class CodeGenerator:
     def generate_expr(self, expr: ASTNode, context_prefix: str = "", valid_fields: Optional[Dict[str, str]] = None) -> str:
         if isinstance(expr, Literal):
             if expr.lit_type == "str":
-                clean_val = str(expr.value).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                clean_val = str(expr.value).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t').replace('\x1b', '\\033')
                 return f'"{clean_val}"'
             if expr.lit_type == "bool":
                 return "true" if expr.value else "false"
@@ -569,13 +596,13 @@ class CodeGenerator:
             if expr.callee == "arena_alloc":
                 a = self.generate_expr(expr.args[0], context_prefix, valid_fields)
                 sz = self.generate_expr(expr.args[1], context_prefix, valid_fields)
-                return f"ktl_arena_alloc(&{a}, {sz})"
+                return f"ktl_arena_alloc({self.to_ptr(a)}, {sz})"
             if expr.callee == "arena_reset":
                 a = self.generate_expr(expr.args[0], context_prefix, valid_fields)
-                return f"ktl_arena_reset(&{a})"
+                return f"ktl_arena_reset({self.to_ptr(a)})"
             if expr.callee == "arena_destroy":
                 a = self.generate_expr(expr.args[0], context_prefix, valid_fields)
-                return f"ktl_arena_destroy(&{a})"
+                return f"ktl_arena_destroy({self.to_ptr(a)})"
             if expr.callee == "panic":
                 msg = self.generate_expr(expr.args[0], context_prefix, valid_fields)
                 return f"ktl_panic({msg})"
@@ -625,22 +652,88 @@ class CodeGenerator:
             if expr.callee == "vec_push":
                 v = self.generate_expr(expr.args[0], context_prefix, valid_fields)
                 item = self.generate_expr(expr.args[1], context_prefix, valid_fields)
-                return f"ktl_vec_push(&{v}, {item})"
+                return f"ktl_vec_push({self.to_ptr(v)}, {item})"
             if expr.callee == "vec_get":
                 v = self.generate_expr(expr.args[0], context_prefix, valid_fields)
                 idx = self.generate_expr(expr.args[1], context_prefix, valid_fields)
-                return f"ktl_vec_get(&{v}, {idx})"
+                return f"ktl_vec_get({self.to_ptr(v)}, {idx})"
             if expr.callee == "vec_set":
                 v = self.generate_expr(expr.args[0], context_prefix, valid_fields)
                 idx = self.generate_expr(expr.args[1], context_prefix, valid_fields)
                 val = self.generate_expr(expr.args[2], context_prefix, valid_fields)
-                return f"ktl_vec_set(&{v}, {idx}, {val})"
+                return f"ktl_vec_set({self.to_ptr(v)}, {idx}, {val})"
             if expr.callee == "vec_len":
                 v = self.generate_expr(expr.args[0], context_prefix, valid_fields)
-                return f"ktl_vec_len(&{v})"
+                return f"ktl_vec_len({self.to_ptr(v)})"
             if expr.callee == "vec_free":
                 v = self.generate_expr(expr.args[0], context_prefix, valid_fields)
-                return f"ktl_vec_free(&{v})"
+                return f"ktl_vec_free({self.to_ptr(v)})"
+            if expr.callee == "args_count":
+                return "ktl_args_count()"
+            if expr.callee == "args_get":
+                idx = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                return f"ktl_args_get({idx})"
+            if expr.callee == "system":
+                cmd = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                return f"ktl_system({cmd})"
+            if expr.callee == "str_char_at":
+                s = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                idx = self.generate_expr(expr.args[1], context_prefix, valid_fields)
+                return f"ktl_str_char_at({s}, {idx})"
+            if expr.callee == "str_sub":
+                s = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                start = self.generate_expr(expr.args[1], context_prefix, valid_fields)
+                length = self.generate_expr(expr.args[2], context_prefix, valid_fields)
+                return f"ktl_str_sub({s}, {start}, {length})"
+            if expr.callee == "str_from_char":
+                c = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                return f"ktl_str_from_char({c})"
+            if expr.callee == "str_starts_with":
+                s = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                p = self.generate_expr(expr.args[1], context_prefix, valid_fields)
+                return f"ktl_str_starts_with({s}, {p})"
+            if expr.callee == "str_ends_with":
+                s = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                p = self.generate_expr(expr.args[1], context_prefix, valid_fields)
+                return f"ktl_str_ends_with({s}, {p})"
+            if expr.callee == "str_index_of":
+                s = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                needle = self.generate_expr(expr.args[1], context_prefix, valid_fields)
+                start = self.generate_expr(expr.args[2], context_prefix, valid_fields) if len(expr.args) > 2 else "0"
+                return f"ktl_str_index_of({s}, {needle}, {start})"
+            if expr.callee == "str_contains":
+                s = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                needle = self.generate_expr(expr.args[1], context_prefix, valid_fields)
+                return f"ktl_str_contains({s}, {needle})"
+            if expr.callee == "str_int":
+                val = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                return f"ktl_str_int({val})"
+            if expr.callee == "parse_int":
+                s = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                return f"ktl_parse_int({s})"
+            if expr.callee == "path_base":
+                p = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                return f"ktl_path_base({p})"
+            if expr.callee == "path_dir":
+                p = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                return f"ktl_path_dir({p})"
+            if expr.callee == "sb_create":
+                cap = self.generate_expr(expr.args[0], context_prefix, valid_fields) if expr.args else "64"
+                return f"ktl_sb_create({cap})"
+            if expr.callee == "sb_append":
+                sb = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                val = self.generate_expr(expr.args[1], context_prefix, valid_fields)
+                return f"ktl_sb_append({self.to_ptr(sb)}, {val})"
+            if expr.callee == "sb_append_char":
+                sb = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                c = self.generate_expr(expr.args[1], context_prefix, valid_fields)
+                return f"ktl_sb_append_char({self.to_ptr(sb)}, {c})"
+            if expr.callee == "sb_build":
+                sb = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                return f"ktl_sb_build({self.to_ptr(sb)})"
+            if expr.callee == "sb_free":
+                sb = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                return f"ktl_sb_free({self.to_ptr(sb)})"
             # Check if this function takes named args or has defaults
             arg_list = []
             target_func = self.functions.get(expr.callee)

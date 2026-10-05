@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+
+      - name: Show toolchain versions
+        run: |
+          clang --version
+          python3 --version
+
+      - name: Bootstrap the self-hosted compiler
+        run: ./build.sh --verify
+
+      - name: Run native end-to-end tests
+        run: ./tests/run_tests.sh
+
+      - name: Run bootstrap compiler unit tests
+        run: python3 -m unittest discover tests/
+
+      - name: Check the formatter is idempotent
+        run: |
+          ./bin/katlin fmt examples/
+          git diff --exit-code -- examples/ \
+            || { echo "::error::katlin fmt produced changes; examples are not formatted"; exit 1; }

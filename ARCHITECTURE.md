@@ -1,66 +1,79 @@
 # The Katlin Language Architecture & Philosophy
-**Mission:** Blazing Native Speed + Total Coding Freedom + Clean Static Typing.
+**Mission:** Native-speed output, flexible syntax, clean static typing.
+
+> **Accuracy notice.** Parts of this document describe the *intended* design,
+> not the current implementation. For a verified list of what actually works
+> today, see the support matrix in [README.md](README.md). Known divergences
+> are flagged inline below.
 
 ---
 
 ## 1. The Core Pillars
 
-1. **Very Fucking Fast**:
-   - Compiles directly to native machine code via **LLVM / Cranelift**.
-   - Zero Garbage Collector (Zero GC pauses, zero runtime baggage).
-   - Compiler register promotion: chained nested functions flatten into raw CPU register operations with 0 heap allocation.
+1. **Fast output, honest about how**:
+   - The compiler emits **C99**, which clang compiles with `-O3 -flto`. It is
+     not a direct machine-code emitter, and there is no LLVM IR or Cranelift
+     backend in the tree.
+   - Zero Garbage Collector: allocation is explicit (`arena`, `vec`,
+     `alloc_ints`, `malloc` via the runtime). Nothing is collected for you.
    - Cache-friendly contiguous memory layout (data-oriented design).
 
 2. **The Memory Dial (Choose Your Strictness)**:
-   - **Three Dial Levels**:
-     - **`#strict` / Rust-like safe**: Enforces borrow checking and ownership lifetimes at compile-time.
-     - **Default (Pragmatic / Fast)**: Stack-first value semantics, automatic scope cleanup, RAII, and `defer`.
-     - **`raw` / C-like Bare Metal**: Raw pointers (`*mut T`), pointer arithmetic, hardware registers, SIMD.
+   - **Default (Pragmatic / Fast)** — stack-first value semantics. Working.
+   - **`#strict`** — enforced by a source-level pass in the native compiler for
+     two rules: no aliased mutable borrows within a call, and no borrowing of
+     variables that were not declared `mut`. It is not a full borrow checker —
+     no lifetimes, moves, scopes or struct-field borrows. See the README
+     section of the same name for the exact scope.
+   - **`raw` blocks and `*mut T` pointers** — *not implemented.* They fail with
+     a C backend error rather than giving you bare-metal access.
 
 3. **Syntactic Freedom ("Code Your Way")**:
-   - Write cleanly: `fn fuck { ... }` (parentheses optional when empty).
-   - Named parameters with `=`: `idkbro(timeout = 10).start()`.
-   - Freeform multiline chaining.
-   - Semicolons strictly optional.
-   - Printing with clean `%` positional slots (`println("Total: %", total)`).
-   - Return keyword optional (last expression is returned).
+   - Parentheses optional on parameterless functions: `fn main { ... }`.
+   - Semicolons optional.
+   - Printing with `%` positional slots (`println("Total: %", total)`), expanded
+     to a type-generic C `_Generic` dispatch rather than a guessed specifier.
+   - Named parameters and fluent chaining (`idkbro(timeout = 10).start()`) are
+     *not implemented* in the native compiler.
 
 4. **Clean Static Typing & Variables**:
-   - Type-first declarations: `int x = 10;`, `str name = "Katlin"`
-   - Mutability freedom: `int &sum = 0;` OR `mut int count = 0;`
-   - Inferred / dynamic typing with `:=`: `x := 10;`
-   - 100% Statically typed for maximum performance and compiler optimization.
+   - Type-first declarations: `int x = 10;`, `str name = "Katlin"`.
+   - Inferred typing with `:=`: `x := 10;` — this is the primary inference form.
+   - `mut int count = 0;` and `mut count := 0;` both work.
+   - `int &sum = 0;` as *local mutability syntax* is **not** supported; `&` is
+     meaningful only in parameter lists (reference parameters).
+   - Types are checked by the C compiler downstream. The Katlin front end
+     infers enough to emit correct C but is not a full type checker, so some
+     mistakes surface as clang diagnostics.
 
 ---
 
-## 2. Memory Strictness Dial: Choose How You Manage Memory
+## 2. Memory Strictness Dial
 
 ```katlin
-// Dial 1: RAW / BARE-METAL (For game engines, drivers, extreme speed)
-fn fast_memcpy(*mut byte dest, *const byte src, usize count) {
-    raw {
-        mut usize i = 0;
-        while i < count {
-            *(dest + i) = *(src + i);
-            i += 1;
-        }
-    }
+// DEFAULT: value semantics, explicit allocation. This works today.
+fn process_audio([]f32 samples) { ... }   // slice syntax: not implemented
+
+fn main {
+    arena := arena_create(1 << 20);
+    buf := arena_alloc(arena, 4096);
+    // ... use buf ...
+    arena_reset(arena);        // one bulk wipe, no per-object frees
+    arena_destroy(arena);
 }
+```
 
-// Dial 2: DEFAULT (Pragmatic systems coding - fast & clean)
-fn process_audio([]f32 samples) {
-    buffer := allocate_stack[f32](1024);
-    defer buffer.free();
+The bare-metal dial (`*mut T`, `raw { ... }`, pointer arithmetic) is a design
+target, not a current feature. The only pointer operations that work today are
+address-of `&x`, and dereference reads and writes through a `:=`-inferred
+pointer:
 
-    apply_reverb(samples, buffer);
-}
-
-// Dial 3: #strict (Rust-grade borrow checking)
-#strict
-
-fn safe_transfer(mut Account a, mut Account b) {
-    a.balance -= 100;
-    b.balance += 100;
+```katlin
+fn main {
+    mut int x = 41;
+    mut p := &x;      // __auto_type p = &x;  -> a real int*
+    *p = 99;          // writes through to x
+    println("x = %", x);
 }
 ```
 
@@ -68,23 +81,25 @@ fn safe_transfer(mut Account a, mut Account b) {
 
 ## 3. "Code However You Want": Syntactic Freedom
 
-### 3.1 Parameterless Functions (Parentheses Optional)
+> The examples in this section are **aspirational syntax**. Named arguments,
+> fluent chaining and inner functions are not implemented by the native
+> compiler; see [README.md](README.md) for the working subset.
+
+### 3.1 Parameterless Functions (Parentheses Optional) — works
 ```katlin
-fn fuck {
-    idkbro(
-        timeout = 10
-    ).start();
+fn main {
+    println("no parentheses needed");
 }
 ```
 
-### 3.2 Named Arguments with `=` or `:`
+### 3.2 Named Arguments with `=` or `:` — not implemented
 ```katlin
-idkbro(timeout = 10, retries = 3).start();
+idkbro(timeout = 10, retries = 3).start();   // C backend error today
 idkbro(timeout: 10, retries: 3).start();
 idkbro(10, 3).start();
 ```
 
-### 3.3 Printing with Slot `%`
+### 3.3 Printing with Slot `%` — works
 ```katlin
 println("Player % reached level % in % seconds", name, level, time);
 ```

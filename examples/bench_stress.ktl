@@ -21,7 +21,7 @@ fn stress_test {
     println("Iterations completed: %", count);
     println("Final computed state: %", x);
     println("Time taken:           % seconds", elapsed);
-    
+
     ops := 1000000000.0 / elapsed;
     println("Execution rate:       % operations/second", ops);
 }

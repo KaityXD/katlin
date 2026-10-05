@@ -123,24 +123,39 @@ fn idkbro(int timeout = 5) {
 
 Katlin lets you choose how strict or bare-metal your memory management is:
 
-### Dial 1: `#strict` at Line 1 (Rust-Grade File Safety)
-Put `#strict` at the top of a file to enforce compile-time borrow checking across the entire file:
+### Dial 1: `#strict` at Line 1 (File-Level Safety)
+Put `#strict` at the top of a file to enable compile-time borrow checking for
+the whole file. The native compiler enforces two rules:
+
+- No aliased mutable borrows: the same variable may not be passed as `&x`
+  twice in one call.
+- No borrowing immutables: `&x` requires `x` to be declared `mut`.
+
 ```katlin
 #strict
 
-import std.net;
+fn swap(int &a, int &b) {
+    int temp = a;
+    a = b;
+    b = temp;
+}
 
-fn transfer(Account &from, Account &to, int amount) {
-    // Compiler strictly verifies:
-    // - No two mutable references point to the same memory (zero aliasing bugs)
-    // - Zero data races across threads
-    from.balance -= amount;
-    to.balance += amount;
+fn main {
+    mut int x = 1;
+    mut int y = 2;
+    swap(&x, &y);   // accepted: distinct variables
+    swap(&x, &x);   // error: cannot borrow `x` as mutable more than once
 }
 ```
 
-### Dial 2: `strict fn` (Function-Level Safety)
-Enforce strict borrow checking on a single sensitive function in a normal file:
+It does **not** verify thread safety, lifetimes, moves, or struct-field
+borrows — see the `#strict` section in [README.md](README.md) for the exact
+scope. Runnable examples: `examples/strict_borrows.ktl` (passes),
+`examples/borrow_fail.ktl` and `examples/borrow_immutable.ktl` (rejected).
+
+### Dial 2: `strict fn` (Function-Level Safety) — **not implemented**
+> Per-function `strict fn` is not supported by the native compiler.
+
 ```katlin
 strict fn safe_swap(int &a, int &b) {
     int temp = a;
@@ -161,7 +176,12 @@ fn load_asset(str path) {
 }
 ```
 
-### Dial 4: `raw` / Bare-Metal Pointers (C / Zig Speed)
+### Dial 4: `raw` / Bare-Metal Pointers — **not implemented**
+
+> This section describes intended syntax. `*mut byte` parameter types and
+> `raw { ... }` blocks are **not supported** by the native compiler today; both
+> produce a C backend error. See [README.md](README.md) for what works.
+
 When you need direct VRAM, DMA, inline hardware registers, or SIMD:
 ```katlin
 fn zero_memory(*mut byte ptr, usize size) {
@@ -175,9 +195,25 @@ fn zero_memory(*mut byte ptr, usize size) {
 }
 ```
 
+**Working alternative today** — heap buffers with indexed access:
+```katlin
+fn main {
+    ptr := alloc_ints(1024);      // int32_t*
+    mut int i = 0;
+    while i < 1024 {
+        ptr[i] = 0;               // index assignment works
+        i += 1;
+    }
+    free_ints(ptr);
+}
+```
+
 ---
 
-## 5. Clean Error Handling with `or`
+## 5. Clean Error Handling with `or` — **not implemented**
+
+> `or` fallback expressions are **not supported** by the native compiler; they
+> produce a C backend error. This is intended syntax.
 
 ```katlin
 port := parse_int(env("PORT")) or 8080;

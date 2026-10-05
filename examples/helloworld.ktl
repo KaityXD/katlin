@@ -1,0 +1,7 @@
+#strict
+
+mut data := 5;
+
+fn main{
+	println("%", data.type);
+}

@@ -78,7 +78,7 @@ fn zero_buffer(*mut int ptr, usize count) {
 // -----------------------------------------------------------
 fn main {
     println("=== Running Katlin Showcase ===");
-    
+
     fuck();
 
     mut int val_x = 10;

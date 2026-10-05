@@ -11,9 +11,9 @@ fn memory_benchmark {
     // Step 2: Allocate 25,000,000 integers (Exactly 100 Megabytes!)
     println("\nAllocating 25,000,000 integers (100 MB)...");
     alloc_start := time_now();
-    
+
     ptr := alloc_ints(25000000);
-    
+
     alloc_time := time_now() - alloc_start;
     println("Allocation time:           % seconds", alloc_time);
 
