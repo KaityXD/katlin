@@ -1,0 +1,75 @@
+// examples/stdlib_showcase.ktl
+// Demonstrates Katlin Standard Library: File I/O, Dynamic Vector, Strings, and Math
+
+fn test_strings {
+    println("--- Testing String Utilities ---");
+    greeting := "Hello, ";
+    target := "Katlin";
+    full := str_concat(greeting, target);
+    println("Concatenated: %", full);
+    println("Length: %", str_len(full));
+    assert(str_len(full) == 13, "Length must be 13");
+    assert(str_eq(full, "Hello, Katlin"), "Strings must match");
+    println("✓ String operations verified!");
+}
+
+fn test_vectors {
+    println("\n--- Testing Dynamic Vector ---");
+    mut v := vec_create(4);
+    
+    // Push 10 numbers
+    for i in 0..10 {
+        vec_push(v, i * 10);
+    }
+
+    println("Vector length: %", vec_len(v));
+    assert(vec_len(v) == 10, "Vector length must be 10");
+
+    println("Item at index 0: %", vec_get(v, 0));
+    println("Item at index 5: %", vec_get(v, 5));
+    println("Item at index 9: %", vec_get(v, 9));
+
+    assert(vec_get(v, 5) == 50, "Index 5 must be 50");
+    vec_free(v);
+    println("✓ Dynamic vector verified!");
+}
+
+fn test_file_io {
+    println("\n--- Testing File I/O ---");
+    path := ".build/katlin_io_test.txt";
+    content := "Katlin is blazing fast and memory safe!\nNative C99 / LLVM output.\n";
+
+    // Write file
+    file_write(path, content);
+    assert(file_exists(path), "File must exist after write");
+
+    // Read back
+    read_text := file_read(path);
+    println("Read % bytes from file:\n%", str_len(read_text), read_text);
+    assert(str_len(read_text) == str_len(content), "File size must match");
+    println("✓ File I/O verified!");
+}
+
+fn main {
+    println("=== KATLIN STANDARD LIBRARY SHOWCASE ===\n");
+    test_strings();
+    test_vectors();
+    test_file_io();
+    println("\nAll standard library systems operational!");
+}
+
+test "math absolute and min/max" {
+    assert(abs(-42) == 42, "Absolute value of -42 is 42");
+    assert(min(10, 20) == 10, "Min of 10 and 20 is 10");
+    assert(max(10, 20) == 20, "Max of 10 and 20 is 20");
+}
+
+test "vector capacity growth" {
+    mut v := vec_create(2);
+    for i in 0..100 {
+        vec_push(v, i);
+    }
+    assert(vec_len(v) == 100, "Vector must hold 100 elements");
+    assert(vec_get(v, 99) == 99, "Last element must be 99");
+    vec_free(v);
+}

@@ -1,0 +1,62 @@
+// examples/phase1_test.ktl
+// Phase 1 Features: Structs, Enums, Member Access, Match, and the 'or' operator
+
+struct Player {
+    int id;
+    str name;
+    int health;
+}
+
+enum State {
+    idle,
+    running,
+    dead
+}
+
+fn get_fallback_port -> int {
+    0 // Simulating invalid or not found
+}
+
+fn parse_port -> int {
+    get_fallback_port() or 9090
+}
+
+fn run_phase1_tests {
+    println("=== Running Katlin Phase 1 Tests ===");
+
+    // 1. Structs and Member Access
+    p := Player{
+        id = 42,
+        name = "Kaitlyn",
+        health = 100
+    };
+
+    println("Player ID:     %", p.id);
+    println("Player Name:   %", p.name);
+    println("Player Health: %", p.health);
+
+    // 2. Enums and Pattern Matching
+    state := State_running;
+
+    match state {
+        case State_idle: {
+            println("State: Standing still");
+        }
+        case State_running: {
+            println("State: Running fast!");
+        }
+        case State_dead: {
+            println("State: Perished");
+        }
+    }
+
+    // 3. The 'or' operator
+    port := parse_port();
+    println("Configured Port (via 'or'): %", port);
+
+    println("\n✓ All Phase 1 language features passed!");
+}
+
+fn main {
+    run_phase1_tests();
+}

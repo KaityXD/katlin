@@ -1,0 +1,52 @@
+// examples/core_tests.ktl
+// Katlin Core Language Unit Tests
+
+struct Point {
+    int x;
+    int y;
+}
+
+enum Color {
+    Red,
+    Green,
+    Blue
+}
+
+fn compute_offset(Point p) -> int {
+    return p.x * 10 + p.y;
+}
+
+test "struct instantiation and member access" {
+    pt := Point{ x = 5, y = 8 };
+    assert(pt.x == 5, "Point.x must be 5");
+    assert(pt.y == 8, "Point.y must be 8");
+    assert(compute_offset(pt) == 58, "Offset calculation must be 58");
+}
+
+test "enum variants and match statements" {
+    c := Color.Green;
+    mut int code = 0;
+    match c {
+        case .Red: { code = 1; }
+        case .Green: { code = 2; }
+        case .Blue: { code = 3; }
+    }
+    assert(code == 2, "Green must map to code 2");
+}
+
+test "loops with step and accumulated state" {
+    mut int total = 0;
+    for i in 0..10 step 3 {
+        total += i; // 0 + 3 + 6 + 9 = 18
+    }
+    assert(total == 18, "Sum of step 3 must equal 18");
+}
+
+test "guard clauses and postfix if" {
+    mut int status = 100;
+    mut int counter = 0;
+    while counter < 5 {
+        counter += 1;
+    }
+    assert(counter == 5, "Counter must reach 5");
+}

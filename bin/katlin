@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+import os
+import sys
+
+# Ensure katlin root directory is in sys.path
+KATLIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if KATLIN_ROOT not in sys.path:
+    sys.path.insert(0, KATLIN_ROOT)
+
+from src.compiler import main
+
+if __name__ == "__main__":
+    main()

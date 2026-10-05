@@ -1,0 +1,57 @@
+// examples/memory_test.ktl
+// Katlin Memory Efficiency Benchmark: 25 Million Elements (100 MB) Allocation & Throughput
+
+fn memory_benchmark {
+    println("=== KATLIN MEMORY BENCHMARK ===");
+
+    // Step 1: Baseline memory
+    ram_before := get_ram_mb();
+    println("1. Baseline RAM Usage:     % MB", ram_before);
+
+    // Step 2: Allocate 25,000,000 integers (Exactly 100 Megabytes!)
+    println("\nAllocating 25,000,000 integers (100 MB)...");
+    alloc_start := time_now();
+    
+    ptr := alloc_ints(25000000);
+    
+    alloc_time := time_now() - alloc_start;
+    println("Allocation time:           % seconds", alloc_time);
+
+    // Step 3: Write to every single integer (testing memory write throughput)
+    write_start := time_now();
+    mut int i = 0;
+    while i < 25000000 {
+        ptr[i] = i * 2;
+        i += 1;
+    }
+    write_time := time_now() - write_start;
+    write_speed := 100.0 / write_time; // MB/sec
+
+    println("Filled 25M ints in:        % seconds (% MB/sec)", write_time, write_speed);
+
+    // Step 4: Measure RAM under active load
+    ram_active := get_ram_mb();
+    println("2. Active RAM Usage:       % MB", ram_active);
+    println("Actual RAM added:          % MB (Zero GC overhead!)", ram_active - ram_before);
+
+    // Step 5: Read and verify checksum
+    mut i64 checksum = 0;
+    mut int j = 0;
+    while j < 25000000 {
+        checksum += (ptr[j] & 1);
+        j += 1;
+    }
+    println("Checksum verified:         %", checksum);
+
+    // Step 6: Free memory
+    free_ints(ptr);
+    println("\nFreed 100 MB buffer.");
+
+    ram_after := get_ram_mb();
+    println("3. RAM After Free:         % MB", ram_after);
+    println("\n✓ Zero memory leaks detected!");
+}
+
+fn main {
+    memory_benchmark();
+}

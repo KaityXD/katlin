@@ -1,0 +1,51 @@
+// examples/idkbro.ktl
+// Katlin: Fast, clean, static typing, and flexible syntax
+
+fn idkbro(int timeout = 5) {
+    mut int current_timeout = timeout;
+    mut int retries = 1;
+
+    fn retry(int count) {
+        retries = count;
+    }
+
+    fn start {
+        println("idkbro started: timeout=%, retries=%", current_timeout, retries);
+    }
+}
+
+fn fuck {
+    idkbro(
+        timeout = 10
+    ).start();
+
+    // '&' style mutable:
+    int &counter = 0;
+    counter += 5;
+
+    // 'mut' keyword style:
+    mut int gayppl = 3;
+    gayppl += 2;
+
+    // ':=' dynamic / inferred typing:
+    total := counter + gayppl;
+
+    // Clean '%' positional printing:
+    println("Counter: %", counter);
+    println("Gay ppl count: %", gayppl);
+    println("Total: %", total);
+
+    // Range loop with step:
+    for i in 0..10 step 2 {
+        println("Loop step: %", i);
+    }
+
+    // Postfix guard:
+    return if total > 100;
+    println("Passed guard check successfully!");
+}
+
+fn main {
+    println("=== KATLIN RUNTIME INITIALIZED ===");
+    fuck();
+}

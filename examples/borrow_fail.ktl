@@ -1,0 +1,16 @@
+// examples/borrow_fail.ktl
+// This file tests the Katlin #strict borrow checker.
+// It deliberately attempts to borrow 'x' as mutable twice in the same call.
+
+#strict
+
+fn swap(int &a, int &b) {
+    int temp = a;
+    a = b;
+    b = temp;
+}
+
+fn main {
+    mut int x = 10;
+    swap(&x, &x); // Error!
+}

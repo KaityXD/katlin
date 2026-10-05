@@ -1,0 +1,31 @@
+// examples/bench_stress.ktl
+// Katlin 1 Billion Sequential CPU Stress Test
+// Performs 1 billion pseudo-random iterations to test raw single-thread CPU execution speed
+
+fn stress_test {
+    println("=== Katlin 1 Billion Strict Loop Stress Test ===");
+    println("Running 1,000,000,000 sequential operations...");
+
+    start_time := time_now();
+
+    mut i64 count = 0;
+    mut i64 x = 123456789;
+
+    while count < 1000000000 {
+        x = (x * 1103515245 + 12345) & 2147483647;
+        count += 1;
+    }
+
+    elapsed := time_now() - start_time;
+
+    println("Iterations completed: %", count);
+    println("Final computed state: %", x);
+    println("Time taken:           % seconds", elapsed);
+    
+    ops := 1000000000.0 / elapsed;
+    println("Execution rate:       % operations/second", ops);
+}
+
+fn main {
+    stress_test();
+}

@@ -1,0 +1,90 @@
+// examples/showcase.ktl
+// Katlin: Fast, flexible, clean static typing.
+// Demonstrates all language features in one place!
+
+import std.io.{println};
+
+// -----------------------------------------------------------
+// 1. NESTED FUNCTIONS & FLUENT DOT-CHAINING
+// -----------------------------------------------------------
+fn idkbro(int timeout = 5) {
+    mut int current_timeout = timeout;
+    mut int retries = 1;
+
+    fn retry(int count) {
+        retries = count;
+    }
+
+    fn start {
+        // Clean '%' positional slots — no {} needed!
+        println("idkbro started: timeout=%, retries=%", current_timeout, retries);
+    }
+}
+
+// -----------------------------------------------------------
+// 2. PARENTHESES-OPTIONAL FUNCTIONS & CODING FREEDOM
+// -----------------------------------------------------------
+fn fuck {
+    idkbro(
+        timeout = 10
+    ).start();
+
+    // '&' style mutable:
+    int &counter = 0;
+    counter += 5;
+
+    // 'mut' keyword style:
+    mut int gayppl = 3;
+    gayppl += 2;
+
+    // ':=' dynamic / inferred typing:
+    total := counter + gayppl;
+
+    // Clean '%' positional printing:
+    println("Counter: %", counter);
+    println("Gay ppl count: %", gayppl);
+    println("Total: %", total);
+}
+
+// -----------------------------------------------------------
+// 3. FUNCTION-LEVEL STRICT SAFETY ('strict fn')
+// (Or put '#strict' on line 1 for whole-file Rust-like borrow checking!)
+// -----------------------------------------------------------
+strict fn safe_swap(int &a, int &b) {
+    // Compiler strictly verifies at compile time:
+    // - 'a' and 'b' cannot point to the same memory location
+    // - No data races between threads
+    int temp = a;
+    a = b;
+    b = temp;
+}
+
+// -----------------------------------------------------------
+// 4. RAW BARE-METAL MEMORY ('raw' blocks & pointers)
+// -----------------------------------------------------------
+fn zero_buffer(*mut int ptr, usize count) {
+    raw {
+        // Full C-style pointer arithmetic for direct VRAM / DMA / Hardware speed
+        mut usize i = 0;
+        while i < count {
+            *(ptr + i) = 0;
+            i += 1;
+        }
+    }
+}
+
+// -----------------------------------------------------------
+// 5. MAIN ENTRY POINT
+// -----------------------------------------------------------
+fn main {
+    println("=== Running Katlin Showcase ===");
+    
+    fuck();
+
+    mut int val_x = 10;
+    mut int val_y = 99;
+    println("Before swap: x=%, y=%", val_x, val_y);
+
+    safe_swap(val_x, val_y);
+    println("After strict swap: x=%, y=%", val_x, val_y);
+}

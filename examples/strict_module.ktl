@@ -1,0 +1,40 @@
+// examples/strict_module.ktl
+// Demonstrating File-Level #strict in Katlin.
+// Placed at line 1, #strict enforces Rust-grade compile-time borrow checks for the entire file.
+
+#strict
+
+import std.io.{println};
+
+struct Account {
+    int id;
+    int &balance;
+}
+
+// In #strict mode, the compiler guarantees:
+// 1. Only ONE mutable reference '&' can exist at a time (zero aliasing bugs).
+// 2. No data races across threads.
+// 3. Zero dangling pointers.
+fn transfer(Account &from, Account &to, int amount) {
+    if from.balance < amount {
+        println("Transfer failed: Insufficient funds in account %", from.id);
+        return;
+    }
+
+    from.balance -= amount;
+    to.balance += amount;
+
+    println("Transferred % from account % to account %", amount, from.id, to.id);
+}
+
+fn main {
+    mut int bal_a = 1000;
+    mut int bal_b = 250;
+
+    Account acc_a = Account{ id: 1, balance: bal_a };
+    Account acc_b = Account{ id: 2, balance: bal_b };
+
+    transfer(acc_a, acc_b, 300);
+
+    println("Final Balances -> A: %, B: %", acc_a.balance, acc_b.balance);
+}

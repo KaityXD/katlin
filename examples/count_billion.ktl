@@ -1,0 +1,28 @@
+// examples/count_billion.ktl
+// Katlin Speed Benchmark: Counting 0 to 1 Billion (1,000,000,000)
+
+fn benchmark {
+    println("=== Katlin 1 Billion Counter Benchmark ===");
+    println("Counting from 0 to 1,000,000,000...");
+
+    start_time := time_now();
+
+    mut i64 count = 0;
+    mut i64 checksum = 0;
+
+    while count < 1000000000 {
+        checksum += (count & 1);
+	println("%", count);
+        count += 1;
+    }
+
+    elapsed := time_now() - start_time;
+
+    println("Final count: %", count);
+    println("Checksum:    %", checksum);
+    println("Time taken:  % seconds", elapsed);
+}
+
+fn main {
+    benchmark();
+}

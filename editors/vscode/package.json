@@ -1,0 +1,37 @@
+{
+  "name": "katlin-lang",
+  "displayName": "Katlin Programming Language",
+  "description": "Language support, syntax highlighting, and snippets for the Katlin programming language (.ktl)",
+  "version": "0.1.0",
+  "publisher": "katlin",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "katlin",
+        "aliases": ["Katlin", "ktl"],
+        "extensions": [".ktl"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "katlin",
+        "scopeName": "source.katlin",
+        "path": "./syntaxes/katlin.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "katlin",
+        "path": "./snippets/katlin.json"
+      }
+    ]
+  }
+}

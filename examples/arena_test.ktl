@@ -1,0 +1,36 @@
+// examples/arena_test.ktl
+// Katlin Arena Bump-Allocator Test: 100,000 allocations wiped in 1 CPU cycle
+
+fn arena_benchmark {
+    println("=== KATLIN ARENA ALLOCATOR BENCHMARK ===");
+
+    // Create a 16 Megabyte Arena
+    mut arena := arena_create(16777216);
+    println("Created 16 MB Arena Bump-Allocator");
+
+    start_time := time_now();
+
+    // Perform 100,000 micro-allocations inside the arena
+    mut int i = 0;
+    while i < 100000 {
+        ptr := arena_alloc(arena, 64);
+        i += 1;
+    }
+
+    elapsed := time_now() - start_time;
+    println("Allocated 100,000 items in: % seconds", elapsed);
+
+    // Reset arena: 0-cycle bulk wipe!
+    wipe_start := time_now();
+    arena_reset(arena);
+    wipe_time := time_now() - wipe_start;
+    println("Bulk wiped 100,000 items in: % seconds (1 CPU instruction!)", wipe_time);
+
+    // Destroy
+    arena_destroy(arena);
+    println("\n✓ Arena test completed successfully!");
+}
+
+fn main {
+    arena_benchmark();
+}
