@@ -49,6 +49,23 @@ git clone <this-repo> && cd katlin
 ./bin/katlin init my_project            # scaffold a new project
 ```
 
+### Editor support
+
+`editors/vscode/` ships a language server that publishes `katlin check`
+diagnostics as you type. The server is a dependency-free Node program
+speaking LSP over stdio, so any editor can drive it — VS Code is just the one
+that has a client written here.
+
+```bash
+node editors/vscode/server/test.js     # 30 tests, drives the real server
+```
+
+Front-end errors (`#strict` borrow violations, a missing `fn main`) are placed
+on the exact line. Backend errors report positions in the generated C, so they
+appear as one diagnostic carrying clang's message rather than a squiggle that
+might point at the wrong line — see
+[editors/vscode/README.md](editors/vscode/README.md).
+
 `bin/katlin` is committed and ready to run. To rebuild it from source:
 
 ```bash
@@ -327,7 +344,7 @@ examples/               Working programs; unsupported/ holds the rest
 tests/run_tests.sh      End-to-end tests for the shipped binary
 tests/test_compiler.py  Unit tests for the Python bootstrap
 build.sh                Bootstrap script (./build.sh --verify)
-editors/vscode/         Syntax highlighting and snippets
+editors/vscode/         Language server, VS Code client, highlighting, snippets
 SYNTAX.md               Language reference
 ARCHITECTURE.md         Design notes
 ```
@@ -343,7 +360,9 @@ ARCHITECTURE.md         Design notes
 2. Deepen `#strict` further: lifetime and move tracking, and seeing borrows
    through the implicit addresses the argument rewriter inserts.
 3. `import` and multi-file projects. Currently `import` is silently skipped.
-4. An LSP so editors get the diagnostics the compiler already produces.
+4. Emit `#line` directives from the transpiler. Backend errors currently
+   report positions in the generated C, so an editor can say *what* is wrong
+   but not *where*; `#line` would fix that for every consumer at once.
 5. Cross-compilation is wired up (`--target`, `--sysroot`) but untested
    against a real cross toolchain; add a CI job with one.
 6. Warning infrastructure — the compiler reports errors only.

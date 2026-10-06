@@ -1,17 +1,38 @@
 {
   "name": "katlin-lang",
   "displayName": "Katlin Programming Language",
-  "description": "Language support, syntax highlighting, and snippets for the Katlin programming language (.ktl)",
-  "version": "0.1.0",
+  "description": "Language support for the Katlin programming language (.ktl): live diagnostics from the compiler, plus syntax highlighting and snippets.",
+  "version": "0.2.0",
   "publisher": "katlin",
+  "license": "MIT",
   "engines": {
-    "vscode": "^1.70.0"
+    "vscode": "^1.82.0"
   },
   "categories": [
     "Programming Languages",
-    "Snippets"
+    "Linters"
   ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:katlin"
+  ],
+  "scripts": {
+    "test": "node server/test.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
   "contributes": {
+    "configuration": {
+      "title": "Katlin",
+      "properties": {
+        "katlin.compilerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the katlin binary. Leave empty to use bin/katlin from the workspace, then katlin on $PATH."
+        }
+      }
+    },
     "languages": [
       {
         "id": "katlin",

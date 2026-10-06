@@ -14,6 +14,11 @@ tests/__pycache__/
 .DS_Store
 *.swp
 
+# VS Code extension dependencies (npm install in editors/vscode/).
+# The language server itself has no dependencies and is committed.
+node_modules/
+*.vsix
+
 # NOTE: bin/katlin is intentionally committed. It is the bootstrapped native
 # compiler, so `git clone && ./bin/katlin run examples/tour.ktl` works with no
 # Python or build step. Regenerate it with ./build.sh after editing
