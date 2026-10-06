@@ -229,6 +229,61 @@ check_eq "guard fires only when true" "1" "$(printf '%s' "$out" | grep -c '^unde
 
 # --------------------------------------------------------------------------
 echo
+echo "reference struct fields"
+# --------------------------------------------------------------------------
+cat > "$WORK/reffields.ktl" <<'KTL'
+struct Account {
+    int id;
+    int &balance;
+}
+fn deposit(Account &acc, int amount) {
+    acc.balance = acc.balance + amount;
+}
+fn describe(Account &acc) {
+    println("id=% bal=%", acc.id, acc.balance);
+}
+fn main {
+    mut int b = 100;
+    Account a = Account{ id: 7, balance: b };
+    deposit(a, 25);
+    describe(a);
+    println("via value: %", a.balance);
+}
+KTL
+out="$("$KATLIN" run "$WORK/reffields.ktl" 2>&1 | strip)"; code=$?
+check_eq "reference struct fields run" "0" "$code"
+check_contains "write through a ref field"      "id=7 bal=125" "$out"
+check_contains "read a ref field from a value"  "via value: 125" "$out"
+
+# Regression: `if`/`while`/`for` consume their opening brace in the
+# transpiler. They used to bump only main_depth, so inside a normal function
+# the matching `}` closed the function early and its `&` parameters stopped
+# being dereferenced partway through the body.
+cat > "$WORK/refafterblock.ktl" <<'KTL'
+fn clamp(int &v, int lo, int hi) {
+    if v < lo {
+        v = lo;
+    }
+    while v > hi {
+        v = v - 1;
+    }
+    for i in 0..1 step 1 {
+        v = v + 0;
+    }
+    v = v + 1;
+}
+fn main {
+    mut int n = 99;
+    clamp(n, 0, 10);
+    println("n=%", n);
+}
+KTL
+out="$("$KATLIN" run "$WORK/refafterblock.ktl" 2>&1 | strip)"; code=$?
+check_eq "& param still works after if/while/for" "0" "$code"
+check_contains "& param written after a block" "n=11" "$out"
+
+# --------------------------------------------------------------------------
+echo
 echo "or fallbacks"
 # --------------------------------------------------------------------------
 cat > "$WORK/orfb.ktl" <<'KTL'

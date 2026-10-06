@@ -200,7 +200,80 @@ fn resolve_type_access(str expr, str type_map) -> str {
     return expr;
 }
 
-fn emit_print(sb &out_sb, str args_str, bool is_nl, str type_map, str enum_names) {
+// `println` argument lists are copied verbatim, so member access through a
+// `&` parameter (`from.id` -> `from->id`) and through a reference field
+// (`a.balance` -> `(*a.balance)`) has to be rewritten here as well.
+fn rewrite_member_access_in(str expr, str ref_fields, str ref_params) -> str {
+    if str_len(ref_fields) <= 1 && str_len(ref_params) <= 1 {
+        return expr;
+    }
+    mut out := sb_create(str_len(expr) + 32);
+    n := str_len(expr);
+    mut i := 0;
+    while i < n {
+        c := str_char_at(expr, i);
+        if is_alpha(c) {
+            ws := i;
+            while i < n && is_alnum(str_char_at(expr, i)) { i += 1; }
+            w := str_sub(expr, ws, i - ws);
+            is_refparam := str_contains(ref_params, str_concat("|", str_concat(w, "|")));
+            mut j := i;
+            while j < n && is_space(str_char_at(expr, j)) { j += 1; }
+            if j < n && str_char_at(expr, j) == 46 { // '.'
+                fs := j + 1;
+                mut fe := fs;
+                while fe < n && is_alnum(str_char_at(expr, fe)) { fe += 1; }
+                fld := str_sub(expr, fs, fe - fs);
+                is_reffield := str_len(fld) > 0 && str_contains(ref_fields, str_concat("|", str_concat(fld, "|")));
+                if is_reffield {
+                    sb_append(out, "(*");
+                    sb_append(out, w);
+                    if is_refparam {
+                        sb_append(out, "->");
+                    } else {
+                        sb_append(out, ".");
+                    }
+                    sb_append(out, fld);
+                    sb_append(out, ")");
+                    i = fe;
+                    continue;
+                }
+                if is_refparam {
+                    sb_append(out, w);
+                    sb_append(out, "->");
+                    sb_append(out, fld);
+                    i = fe;
+                    continue;
+                }
+            }
+            // A `&` parameter is a pointer, so using its value needs a
+            // dereference. Missing this in a loop condition compared the
+            // pointer address and produced an infinite loop.
+            if is_refparam {
+                sb_append(out, "(*");
+                sb_append(out, w);
+                sb_append(out, ")");
+                continue;
+            }
+            sb_append(out, w);
+            continue;
+        }
+        sb_append_char(out, c);
+        i += 1;
+    }
+    return sb_build(out);
+}
+
+// Apply every expression-level rewrite the transpiler knows about to a piece
+// of source text that would otherwise be copied verbatim (a `println`
+// argument list, or the condition of an `if`/`while`).
+fn rewrite_expr_text(str e, str type_map, str enum_names, str ref_fields, str ref_params) -> str {
+    step1 := resolve_type_access(e, type_map);
+    step2 := strip_enum_prefix(step1, enum_names);
+    return rewrite_member_access_in(step2, ref_fields, ref_params);
+}
+
+fn emit_print(sb &out_sb, str args_str, bool is_nl, str type_map, str enum_names, str ref_fields, str ref_params) {
     idx_comma := find_arg_comma(args_str);
     if idx_comma == -1 {
         // Single argument, e.g. println("Counting from 0 to 1,000,000,000...")
@@ -214,7 +287,7 @@ fn emit_print(sb &out_sb, str args_str, bool is_nl, str type_map, str enum_names
             sb_append(out_sb, "\")");
         } else {
             sb_append(out_sb, "ktl_print_any(");
-            sb_append(out_sb, strip_enum_prefix(resolve_type_access(trimmed, type_map), enum_names));
+            sb_append(out_sb, rewrite_expr_text(trimmed, type_map, enum_names, ref_fields, ref_params));
             sb_append(out_sb, ")");
             if is_nl { sb_append(out_sb, "; printf(\"\\n\")"); }
         }
@@ -251,7 +324,7 @@ fn emit_print(sb &out_sb, str args_str, bool is_nl, str type_map, str enum_names
             }
             if str_len(curr_arg) > 0 {
                 sb_append(out_sb, "ktl_print_any(");
-                sb_append(out_sb, strip_enum_prefix(resolve_type_access(curr_arg, type_map), enum_names));
+                sb_append(out_sb, rewrite_expr_text(curr_arg, type_map, enum_names, ref_fields, ref_params));
                 sb_append(out_sb, "); ");
             }
             last = i + 1;
@@ -392,6 +465,14 @@ fn transpile_source(str src, bool test_mode) -> str {
     mut str def_name = "";
     mut in_init := false;
     mut init_depth := 0;
+    // Set when a `field:` designator has emitted its dot and is waiting for
+    // the colon to turn into `=`.
+    mut init_colon_pending := false;
+    // Reference fields declared by any struct, as "|balance|". Initialising one
+    // takes the address of the value, the same way a `&` parameter does.
+    mut str ref_fields = "|";
+    mut init_amp_field := false;
+    mut init_amp_next := false;
     mut in_match := false;
     mut match_depth := 0;
     mut match_first := false;
@@ -420,6 +501,17 @@ fn transpile_source(str src, bool test_mode) -> str {
 
     while pos < len {
         c := str_char_at(src, pos);
+
+        // The value of a reference field is a value, so take its address:
+        // `{ balance: b }` becomes `{ .balance = &b }`. Checked here, at the
+        // top, so it also applies when the value starts with an identifier
+        // (which the identifier branch below consumes).
+        if init_amp_next && c != 32 && c != 9 && c != 10 && c != 13 {
+            if c != 38 && c != 42 { // not already '&' or '*'
+                sb_append_char(out_buf, 38); // '&'
+            }
+            init_amp_next = false;
+        }
 
         // Skip comments
         if c == 47 && pos + 1 < len { // '/'
@@ -574,9 +666,11 @@ fn transpile_source(str src, bool test_mode) -> str {
                 while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
                 c_start := pos;
                 while pos < len && str_char_at(src, pos) != 123 { pos += 1; }
-                cond := trim_string(str_sub(src, c_start, pos - c_start));
+                mut cond := trim_string(str_sub(src, c_start, pos - c_start));
+                cond = rewrite_expr_text(cond, type_map, enum_names, ref_fields, ref_params);
                 if pos < len && str_char_at(src, pos) == 123 {
                     if in_main { main_depth += 1; }
+                    if fn_depth > 0 { fn_depth += 1; }
                     pos += 1;
                 }
 
@@ -590,9 +684,11 @@ fn transpile_source(str src, bool test_mode) -> str {
                 while pos < len && is_space(str_char_at(src, pos)) { pos += 1; }
                 c_start := pos;
                 while pos < len && str_char_at(src, pos) != 123 { pos += 1; }
-                cond := trim_string(str_sub(src, c_start, pos - c_start));
+                mut cond := trim_string(str_sub(src, c_start, pos - c_start));
+                cond = rewrite_expr_text(cond, type_map, enum_names, ref_fields, ref_params);
                 if pos < len && str_char_at(src, pos) == 123 {
                     if in_main { main_depth += 1; }
+                    if fn_depth > 0 { fn_depth += 1; }
                     pos += 1;
                 }
 
@@ -641,6 +737,7 @@ fn transpile_source(str src, bool test_mode) -> str {
 
                 if pos < len && str_char_at(src, pos) == 123 {
                     if in_main { main_depth += 1; }
+                    if fn_depth > 0 { fn_depth += 1; }
                     pos += 1;
                 }
 
@@ -841,7 +938,7 @@ fn transpile_source(str src, bool test_mode) -> str {
                 print_args_str := str_sub(src, arg_start, pos - arg_start);
                 pos += 1; // skip ')'
 
-                emit_print(&out_buf, print_args_str, is_nl, type_map, enum_names);
+                emit_print(&out_buf, print_args_str, is_nl, type_map, enum_names, ref_fields, ref_params);
                 continue;
             }
 
@@ -990,13 +1087,34 @@ fn transpile_source(str src, bool test_mode) -> str {
                 }
             }
 
-            // Inside a struct literal, `field = value` needs a C99 designator.
+            // Inside a struct literal, `field = value` and `field: value` both
+            // need a C99 designator. The colon form is only recognised at the
+            // start of a field, so a ternary in a value (`{ x: a ? b : c }`) is
+            // not mistaken for a designator.
             if in_init {
                 mut look := pos;
                 while look < len && is_space(str_char_at(src, look)) { look += 1; }
                 if look < len && str_char_at(src, look) == 61 { // '='
                     if look + 1 >= len || str_char_at(src, look + 1) != 61 {
                         sb_append_char(out_buf, 46); // '.'
+                        if str_contains(ref_fields, str_concat("|", str_concat(word, "|"))) {
+                            init_amp_field = true;
+                        }
+                    }
+                } else if look < len && str_char_at(src, look) == 58 { // ':'
+                    // Only a designator when the field directly follows `{` or
+                    // `,`, so a ternary in a value is left alone.
+                    mut b := start;
+                    while b > 0 && is_space(str_char_at(src, b - 1)) { b -= 1; }
+                    if b > 0 {
+                        pc := str_char_at(src, b - 1);
+                        if pc == 123 || pc == 44 { // '{' or ','
+                            sb_append_char(out_buf, 46); // '.'
+                            init_colon_pending = true;
+                            if str_contains(ref_fields, str_concat("|", str_concat(word, "|"))) {
+                                init_amp_field = true;
+                            }
+                        }
                     }
                 }
             }
@@ -1017,13 +1135,96 @@ fn transpile_source(str src, bool test_mode) -> str {
 
             // Reference parameters are C pointers; dereference every use.
             if str_contains(ref_params, str_concat("|", str_concat(word, "|"))) {
+                mut rl := pos;
+                while rl < len && is_space(str_char_at(src, rl)) { rl += 1; }
+                if rl < len && str_char_at(src, rl) == 46 { // '.'
+                    // Member access through a pointer uses `->`, and a field
+                    // that is itself a reference needs a dereference too.
+                    fs := rl + 1;
+                    mut fe := fs;
+                    while fe < len && is_alnum(str_char_at(src, fe)) { fe += 1; }
+                    fld := str_sub(src, fs, fe - fs);
+                    if str_len(fld) > 0 && str_contains(ref_fields, str_concat("|", str_concat(fld, "|"))) {
+                        sb_append(out_buf, "(*");
+                        sb_append(out_buf, word);
+                        sb_append(out_buf, "->");
+                        sb_append(out_buf, fld);
+                        sb_append(out_buf, ")");
+                        pos = fe;
+                        continue;
+                    }
+                    sb_append(out_buf, word);
+                    sb_append(out_buf, "->");
+                    pos = rl + 1;
+                    continue;
+                }
                 sb_append_char(out_buf, 42); // '*'
                 sb_append(out_buf, word);
                 continue;
             }
 
+            // A struct *value* with a reference field: `a.balance` holds a
+            // pointer, so reading the referenced value needs a dereference.
+            if str_len(ref_fields) > 1 {
+                mut vl := pos;
+                while vl < len && is_space(str_char_at(src, vl)) { vl += 1; }
+                if vl < len && str_char_at(src, vl) == 46 { // '.'
+                    fs := vl + 1;
+                    mut fe := fs;
+                    while fe < len && is_alnum(str_char_at(src, fe)) { fe += 1; }
+                    fld := str_sub(src, fs, fe - fs);
+                    if str_len(fld) > 0 && str_contains(ref_fields, str_concat("|", str_concat(fld, "|"))) {
+                        sb_append(out_buf, "(*");
+                        sb_append(out_buf, word);
+                        sb_append(out_buf, ".");
+                        sb_append(out_buf, fld);
+                        sb_append(out_buf, ")");
+                        pos = fe;
+                        continue;
+                    }
+                }
+            }
+
             // Normal word
             sb_append(out_buf, word);
+            continue;
+        }
+
+        // Reference struct fields: `struct S { int &balance; }` declares a
+        // pointer member, so the `&` becomes `*`.
+        if c == 38 && in_type_def {
+            mut q := pos + 1;
+            while q < len && is_space(str_char_at(src, q)) { q += 1; }
+            ns := q;
+            while q < len && is_alnum(str_char_at(src, q)) { q += 1; }
+            if q > ns {
+                fname := str_sub(src, ns, q - ns);
+                ref_fields = str_concat(ref_fields, str_concat("|", str_concat(fname, "|")));
+                sb_append_char(out_buf, 42); // '*'
+                pos = ns;
+                continue;
+            }
+        }
+
+        // `field = value` in a struct literal: the separator ends the
+        // designator, so arm the address-of for the value.
+        if c == 61 && in_init && init_amp_field {
+            sb_append_char(out_buf, 61); // '='
+            init_amp_field = false;
+            init_amp_next = true;
+            pos += 1;
+            continue;
+        }
+
+        // The colon of a `field:` designator becomes `=`.
+        if c == 58 && init_colon_pending {
+            sb_append_char(out_buf, 61); // '='
+            init_colon_pending = false;
+            if init_amp_field {
+                init_amp_field = false;
+                init_amp_next = true;
+            }
+            pos += 1;
             continue;
         }
 
@@ -1541,6 +1742,7 @@ fn build_signature(str fname, str params) -> str {
     }
     mut str names = "";
     mut str defs = "";
+    mut str refs = "";
     mut i := 0;
     while i < np {
         frag := trim_string(field_at(parts, i));
@@ -1566,12 +1768,20 @@ fn build_signature(str fname, str params) -> str {
         if i > 0 {
             names = str_concat(names, ",");
             defs = str_concat(defs, ",");
+            refs = str_concat(refs, ",");
         }
         names = str_concat(names, pname);
         defs = str_concat(defs, pdef);
+        // A `&` parameter is a pointer in C, so call sites must pass an
+        // address. Recorded as 1/0 so the call rewriter knows which positions.
+        if str_contains(frag, "&") {
+            refs = str_concat(refs, "1");
+        } else {
+            refs = str_concat(refs, "0");
+        }
         i += 1;
     }
-    return str_concat(fname, str_concat("#", str_concat(names, str_concat("#", str_concat(defs, "|")))));
+    return str_concat(fname, str_concat("#", str_concat(names, str_concat("#", str_concat(defs, str_concat("#", str_concat(refs, "|")))))));
 }
 
 fn collect_signatures(str src) -> str {
@@ -1679,10 +1889,18 @@ fn positional_args(str sig, str args_text) -> str {
     h2 := str_index_of(sig, "#", h1 + 1);
     if h2 < 0 { return ""; }
     names := str_sub(sig, h1 + 1, h2 - h1 - 1);
-    defs := str_sub(sig, h2 + 1, str_len(sig) - h2 - 1);
+    mut str defs = str_sub(sig, h2 + 1, str_len(sig) - h2 - 1);
+    // Optional 4th field: per-parameter "1" when declared with `&`.
+    mut str refs = "";
+    h3 := str_index_of(defs, "#", 0);
+    if h3 >= 0 {
+        refs = str_sub(defs, h3 + 1, str_len(defs) - h3 - 1);
+        defs = str_sub(defs, 0, h3);
+    }
 
     name_list := split_top_commas(names);
     def_list := split_top_commas(defs);
+    ref_list := split_top_commas(refs);
     np := field_count(name_list);
 
     given := split_top_commas(args_text);
@@ -1746,6 +1964,14 @@ fn positional_args(str sig, str args_text) -> str {
         }
         if i > 0 {
             sb_append(result, ", ");
+        }
+        // A `&` parameter needs an address at the call site, the same way the
+        // Python bootstrap compiler inserts one.
+        if str_eq(field_at(ref_list, i), "1") && str_len(v) > 0 {
+            c0 := str_char_at(v, 0);
+            if c0 != 38 && c0 != 42 { // not already '&' or '*'
+                sb_append(result, "&");
+            }
         }
         sb_append(result, v);
         i += 1;

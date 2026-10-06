@@ -21,6 +21,7 @@ readable and hackable. It is honest about what works:
 | Arguments | Default arguments, named arguments, postfix guard clauses — working |
 | Error handling | `or` fallbacks: value default, `or return`, `or panic(...)` — working |
 | Memory | Arena, vector, string builder, raw pointers, `raw` blocks — working, no GC |
+| References | `&` parameters, reference struct fields, automatic call-site addressing |
 | Toolchain | `run`, `build`, `check`, `test`, `fmt`, `init`, cross-compilation — working |
 | Builds | Incremental; unchanged sources skip clang entirely |
 | `#strict` borrow checking | **Enforced** for aliased `&` borrows and borrows of immutable variables |
@@ -128,7 +129,10 @@ Verified by `tests/run_tests.sh` against the shipped binary.
 - Compound assignment (`+=`, `-=`, `*=`, `/=`)
 - `struct` definitions, `Point{ x = 1, y = 2 }` literals, member access
 - `enum` definitions, `Color.Green` variants, `match` with `case .Variant:`
-- Reference parameters (`int &a`) — writes propagate to the caller
+- Reference parameters (`int &a`) — writes propagate to the caller, with
+  addresses supplied automatically at call sites
+- Reference struct fields (`int &balance`), including `Account{ id: 1, balance: b }`
+  colon or `=` designators and `acc.balance` access through a `&` parameter
 - Address-of `&x` and dereference `*p`, including `*p = value`
 - Raw pointers: `*mut T`, `*const T`, pointer arithmetic, `raw { ... }` blocks
 - Default arguments and named arguments in any order
@@ -148,8 +152,6 @@ Verified by `tests/run_tests.sh` against the shipped binary.
 | Feature | Behaviour today |
 | :--- | :--- |
 | Inner functions / fluent `.start()` chaining | C backend error |
-| Reference struct fields (`int &balance`) | C backend error |
-| Member access through a `&` parameter (`from.balance`) | C backend error |
 | Local `int &x = 0` mutability syntax | C backend error |
 | `strict fn` (per-function strict mode) | Not recognised |
 | `or` nested inside a call argument | C backend error |
@@ -296,7 +298,7 @@ Reproduce with:
 ## Testing
 
 ```bash
-./tests/run_tests.sh                    # 66 end-to-end tests, shipped binary
+./tests/run_tests.sh                    # 72 end-to-end tests, shipped binary
 python3 -m unittest discover tests/     # 14 unit tests, Python bootstrap
 ```
 
@@ -329,10 +331,9 @@ ARCHITECTURE.md         Design notes
 ## Roadmap
 
 1. Replace the character-level scanner with a real lexer/parser/AST in
-   `compiler/main.ktl`. Inner functions with scope capture, reference struct
-   fields, member access through `&` parameters, and implicit last-expression
-   returns are all blocked on this — they need to know the shape of an
-   expression, which a scanner cannot determine.
+   `compiler/main.ktl`. Inner functions with scope capture and implicit
+   last-expression returns are blocked on this — they need to know the shape
+   of an expression, which a scanner cannot determine.
 2. Deepen `#strict`: lifetime and move tracking, scope-aware mutability, and
    struct field borrows. Today it covers aliased `&` borrows only.
 3. `import` and multi-file projects. Currently `import` is silently skipped.

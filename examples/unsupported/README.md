@@ -12,12 +12,14 @@ They are excluded from `tests/run_tests.sh`, which requires every file in
 | :--- | :--- | :--- |
 | `idkbro.ktl` | inner functions with scope capture, fluent `.start()` chaining | not implemented |
 | `showcase.ktl` | inner functions with scope capture, fluent `.start()` chaining | not implemented |
-| `phase1_test.ktl` | implicit return of a function's last expression, `match` over enum subjects | not implemented |
-| `strict_module.ktl` | reference struct fields (`int &balance`), member access through `&` parameters | not implemented |
+| `phase1_test.ktl` | implicit return of a function's last expression, `match` on a non-enum subject | not implemented |
 
-Everything else these files use now works: `idkbro.ktl` and `showcase.ktl`
-get as far as the inner `fn`, and their named arguments and parameter
-defaults are handled correctly.
+`strict_module.ktl` used to live here for its reference struct fields
+(`int &balance`); those now work, so it has moved up to `examples/`.
+
+Everything else these files use is handled: `idkbro.ktl` and `showcase.ktl`
+get as far as their inner `fn`, and their named arguments, parameter defaults
+and postfix guards all translate correctly.
 
 You can still build these with the bootstrap compiler, which has a full
 parser:
