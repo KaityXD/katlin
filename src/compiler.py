@@ -18,6 +18,57 @@ VERSION = "0.1.0"
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STD_DIR = os.path.join(ROOT_DIR, "std")
 
+def bundle_imports(source_path: str, visited: Optional[set] = None, is_root: bool = True) -> str:
+    if visited is None:
+        visited = set()
+
+    canon = os.path.abspath(source_path)
+    if canon in visited:
+        return ""
+    visited.add(canon)
+
+    if not os.path.exists(source_path):
+        raise KatlinError(f"source file not found: {source_path}")
+
+    with open(source_path, "r", encoding="utf-8") as f:
+        src = f.read()
+
+    if not is_root and re.search(r'\bfn\s+main\b', src):
+        raise KatlinError(f"imported module '{source_path}' cannot define 'fn main'")
+
+    dir_name = os.path.dirname(canon)
+    imported_blocks = []
+    out_lines = []
+
+    for line in src.splitlines(keepends=True):
+        m = re.match(r'^\s*import\s+("([^"]+)"|([a-zA-Z0-9_./]+))\s*;?', line)
+        if m:
+            raw_target = m.group(2) if m.group(2) is not None else m.group(3)
+            if raw_target.startswith("std.") or raw_target == "std":
+                out_lines.append(f"// std import: {raw_target}\n")
+                continue
+
+            clean = raw_target
+            if not clean.endswith(".ktl"):
+                clean = clean.replace(".", "/") + ".ktl"
+            if clean.startswith("./"):
+                clean = clean[2:]
+
+            cand = os.path.join(dir_name, clean)
+            if not os.path.exists(cand):
+                cand = clean
+            if not os.path.exists(cand):
+                raise KatlinError(f"cannot find imported module '{raw_target}' in '{source_path}'")
+
+            sub_src = bundle_imports(cand, visited, is_root=False)
+            if sub_src:
+                imported_blocks.append(sub_src)
+            out_lines.append(f"// imported: {cand}\n")
+        else:
+            out_lines.append(line)
+
+    return "".join(imported_blocks) + "\n" + "".join(out_lines)
+
 def compile_katlin(
     source_path: str,
     output_binary: Optional[str] = None,
@@ -31,10 +82,10 @@ def compile_katlin(
         print(f"[Error]: Source file not found: {source_path}", file=sys.stderr)
         return 1
 
-    with open(source_path, "r", encoding="utf-8") as f:
-        source_code = f.read()
-
+    source_code = ""
     try:
+        source_code = bundle_imports(source_path)
+
         # Step 1: Lexing
         tokens = Lexer(source_code).tokenize()
 

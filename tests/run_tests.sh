@@ -437,6 +437,79 @@ fi
 
 # --------------------------------------------------------------------------
 echo
+echo "multi-file modules & imports"
+# --------------------------------------------------------------------------
+mkdir -p "$WORK/modules"
+cat > "$WORK/modules/math_mod.ktl" <<'KTL'
+struct Point2D { int x; int y; }
+fn add_pt(Point2D a, Point2D b) -> Point2D {
+    return Point2D{ x = a.x + b.x, y = a.y + b.y };
+}
+KTL
+
+cat > "$WORK/modules/display.ktl" <<'KTL'
+import "math_mod.ktl";
+fn show_pt(Point2D p) {
+    println("pt:(%, %)", p.x, p.y);
+}
+KTL
+
+cat > "$WORK/modules/main_quoted.ktl" <<'KTL'
+import "math_mod.ktl";
+import "display.ktl";
+
+fn main {
+    p1 := Point2D{ x = 10, y = 20 };
+    p2 := Point2D{ x = 5, y = 15 };
+    p3 := add_pt(p1, p2);
+    show_pt(p3);
+}
+KTL
+
+out="$("$KATLIN" run "$WORK/modules/main_quoted.ktl" 2>&1 | strip)"; code=$?
+check_eq "multi-file quoted import compiles and runs" "0" "$code"
+check_contains "multi-file output is correct" "pt:(15, 35)" "$out"
+
+cat > "$WORK/modules/main_ident.ktl" <<'KTL'
+import math_mod;
+import display;
+
+fn main {
+    p1 := Point2D{ x = 1, y = 2 };
+    p2 := Point2D{ x = 3, y = 4 };
+    show_pt(add_pt(p1, p2));
+}
+KTL
+
+out="$("$KATLIN" run "$WORK/modules/main_ident.ktl" 2>&1 | strip)"; code=$?
+check_eq "bare identifier import compiles and runs" "0" "$code"
+check_contains "bare identifier import output is correct" "pt:(4, 6)" "$out"
+
+cat > "$WORK/modules/missing.ktl" <<'KTL'
+import "does_not_exist_xyz.ktl";
+fn main {}
+KTL
+err_out="$("$KATLIN" check "$WORK/modules/missing.ktl" 2>&1 | strip)"; code=$?
+check_eq "missing import exits 1" "1" "$code"
+check_contains "missing import error mentions module" "cannot find imported module 'does_not_exist_xyz.ktl'" "$err_out"
+
+cat > "$WORK/modules/sub_with_main.ktl" <<'KTL'
+fn main { println("sub"); }
+KTL
+cat > "$WORK/modules/top_import_main.ktl" <<'KTL'
+import "sub_with_main.ktl";
+fn main { println("top"); }
+KTL
+err_out="$("$KATLIN" check "$WORK/modules/top_import_main.ktl" 2>&1 | strip)"; code=$?
+check_eq "imported file defining fn main exits 1" "1" "$code"
+check_contains "imported file defining fn main reports error" "cannot define 'fn main'" "$err_out"
+
+out="$("$KATLIN" run "$ROOT/examples/multi_module/main.ktl" 2>&1 | strip)"; code=$?
+check_eq "example: multi_module/main builds and runs" "0" "$code"
+check_contains "multi_module example output has dot product" "Dot product: 63" "$out"
+
+# --------------------------------------------------------------------------
+echo
 echo "examples"
 # --------------------------------------------------------------------------
 for f in "$ROOT"/examples/*.ktl; do

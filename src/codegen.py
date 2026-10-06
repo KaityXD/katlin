@@ -6,7 +6,7 @@ from src.ast_nodes import (
     Program, FunctionDef, Parameter, VarDecl, AssignStmt, ReturnStmt, BreakStmt, ContinueStmt,
     PrintStmt, CallExpr, ChainedCall, IfStmt, WhileStmt, LoopStmt, ForStmt,
     RawBlock, BinaryOp, UnaryOp, Literal, Identifier, ExprStmt, IndexAssign, IndexExpr,
-    StructField, StructDef, StructInit, MemberAccess, EnumDef, OrExpr, MatchBranch, MatchStmt, TestBlock, ASTNode
+    StructField, StructDef, StructInit, MemberAccess, MethodCall, EnumDef, OrExpr, MatchBranch, MatchStmt, TestBlock, ASTNode
 )
 
 TYPE_MAP = {
@@ -18,8 +18,41 @@ TYPE_MAP = {
     "u64": "ktl_u64",
     "byte": "ktl_byte",
     "vec": "ktl_vec",
+    "vec_str": "ktl_vec_str",
+    "map": "ktl_map",
     "arena": "ktl_arena",
     "sb": "ktl_sb",
+}
+
+# Dot-method sugar: receiver.method(args) -> free function.
+# Old underscore names (str_len, vec_push, ...) keep working; these are the
+# short names allowed after a dot. `type` is special-cased as compile-time.
+STR_METHODS = {
+    "len": "str_len", "eq": "str_eq", "concat": "str_concat",
+    "trim": "str_trim", "lower": "str_to_lower", "upper": "str_to_upper",
+    "replace": "str_replace", "repeat": "str_repeat", "split_at": "str_split_at",
+    "count": "str_count", "char_at": "str_char_at", "sub": "str_sub",
+    "from_char": "str_from_char", "starts_with": "str_starts_with",
+    "ends_with": "str_ends_with", "contains": "str_contains",
+    "index_of": "str_index_of", "parse_int": "parse_int", "to_int": "parse_int",
+}
+VEC_METHODS = {"push": "vec_push", "get": "vec_get", "set": "vec_set", "len": "vec_len", "free": "vec_free"}
+VEC_STR_METHODS = {"push": "vec_str_push", "get": "vec_str_get", "len": "vec_str_len", "join": "vec_str_join", "free": "vec_str_free"}
+MAP_METHODS = {"set": "map_set", "get": "map_get", "has": "map_has", "len": "map_len", "free": "map_free"}
+SB_METHODS = {"append": "sb_append", "append_char": "sb_append_char", "build": "sb_build", "free": "sb_free", "len": "sb_len"}
+ARENA_METHODS = {"alloc": "arena_alloc", "reset": "arena_reset", "destroy": "arena_destroy"}
+# Unique method -> free function when receiver type is unknown.
+UNIQUE_METHODS = {
+    "trim": "str_trim", "lower": "str_to_lower", "upper": "str_to_upper",
+    "replace": "str_replace", "repeat": "str_repeat", "split_at": "str_split_at",
+    "count": "str_count", "char_at": "str_char_at", "sub": "str_sub",
+    "starts_with": "str_starts_with", "ends_with": "str_ends_with",
+    "contains": "str_contains", "index_of": "str_index_of",
+    "eq": "str_eq", "concat": "str_concat",
+    "join": "vec_str_join", "has": "map_has",
+    "append": "sb_append", "append_char": "sb_append_char", "build": "sb_build",
+    "alloc": "arena_alloc", "reset": "arena_reset", "destroy": "arena_destroy",
+    "to_int": "parse_int",
 }
 
 class CodeGenerator:
@@ -296,16 +329,36 @@ class CodeGenerator:
         if isinstance(expr, CallExpr):
             if expr.callee in ("time_now", "get_ram_mb"):
                 return "float"
-            if expr.callee in ("file_read", "str_concat", "args_get", "str_sub", "str_from_char", "str_int", "path_base", "path_dir", "sb_build"):
+            if expr.callee in (
+                "file_read", "str_concat", "args_get", "str_sub", "str_from_char",
+                "str_int", "path_base", "path_dir", "sb_build", "str_trim",
+                "str_to_lower", "str_to_upper", "str_replace", "str_repeat",
+                "str_split_at", "dir_list", "cmd_output", "net_tcp_read",
+                "vec_str_get", "vec_str_join", "map_get"
+            ):
                 return "str"
-            if expr.callee in ("file_write", "file_append", "file_exists", "str_eq", "assert", "str_starts_with", "str_ends_with", "str_contains"):
+            if expr.callee in (
+                "file_write", "file_append", "file_exists", "str_eq", "assert",
+                "str_starts_with", "str_ends_with", "str_contains", "file_is_dir",
+                "dir_create", "file_remove", "map_has"
+            ):
                 return "bool"
-            if expr.callee in ("vec_get",):
+            if expr.callee in ("vec_get", "file_size", "time_unix"):
                 return "i64"
-            if expr.callee in ("str_len", "str_char_at", "str_index_of", "parse_int", "args_count", "system", "math_abs", "abs", "math_min", "min", "math_max", "max", "vec_len", "alloc_ints"):
+            if expr.callee in (
+                "str_len", "str_char_at", "str_index_of", "parse_int", "args_count",
+                "system", "math_abs", "abs", "math_min", "min", "math_max", "max",
+                "vec_len", "alloc_ints", "vec_str_len", "map_len", "str_count", "sb_len",
+                "net_tcp_listen", "net_tcp_accept", "net_tcp_write",
+                "net_tcp_connect", "rand_int"
+            ):
                 return "int"
             if expr.callee == "vec_create":
                 return "vec"
+            if expr.callee == "vec_str_create":
+                return "vec_str"
+            if expr.callee == "map_create":
+                return "map"
             if expr.callee == "arena_create":
                 return "arena"
             if expr.callee == "sb_create":
@@ -327,6 +380,8 @@ class CodeGenerator:
                 return "i64"
             return l_t
         if isinstance(expr, MemberAccess):
+            if expr.member == "type":
+                return "str"
             if isinstance(expr.target, Identifier) and expr.target.name in self.enums:
                 return expr.target.name
             if isinstance(expr.target, Identifier):
@@ -334,6 +389,53 @@ class CodeGenerator:
                 if tgt_type and tgt_type in self.struct_fields:
                     return self.struct_fields[tgt_type].get(expr.member, "int")
             if expr.member in ("name", "msg", "title", "text", "path", "url"):
+                return "str"
+            # Zero-arg dot-method used as property: s.len -> int, s.trim -> str, etc.
+            if expr.member in ("len", "count", "char_at", "index_of", "parse_int", "to_int"):
+                return "int"
+            if expr.member in ("trim", "lower", "upper", "replace", "repeat", "split_at", "sub", "concat", "join", "get", "build"):
+                return "str"
+            if expr.member in ("eq", "contains", "starts_with", "ends_with", "has"):
+                return "bool"
+        if isinstance(expr, MethodCall):
+            if expr.method == "type":
+                return "str"
+            recv_t = self.infer_expr_type(expr.target)
+            # Resolve short method via receiver type
+            if recv_t == "str" or (isinstance(expr.target, Literal) and expr.target.lit_type == "str"):
+                if expr.method in ("len", "count", "char_at", "index_of", "parse_int", "to_int"):
+                    return "int"
+                if expr.method in ("eq", "contains", "starts_with", "ends_with"):
+                    return "bool"
+                return "str"
+            if recv_t in ("vec",):
+                if expr.method == "len" or expr.method == "get":
+                    return "int"
+                return "int"
+            if recv_t in ("vec_str",):
+                if expr.method == "len":
+                    return "int"
+                return "str"
+            if recv_t in ("map",):
+                if expr.method == "len":
+                    return "int"
+                if expr.method == "has":
+                    return "bool"
+                return "str"
+            if recv_t in ("sb",):
+                if expr.method == "len":
+                    return "int"
+                if expr.method == "build":
+                    return "str"
+                return "int"
+            if recv_t in ("arena",):
+                return "int"
+            # Fallback by unique method name
+            if expr.method in ("len", "count", "char_at", "index_of", "parse_int", "to_int"):
+                return "int"
+            if expr.method in ("eq", "contains", "starts_with", "ends_with", "has"):
+                return "bool"
+            if expr.method in ("trim", "lower", "upper", "replace", "repeat", "split_at", "sub", "concat", "join", "get", "build"):
                 return "str"
         return "int"
 
@@ -344,10 +446,11 @@ class CodeGenerator:
                 val_code = "0"
             if stmt.guard_condition:
                 cond_code = self.generate_expr(stmt.guard_condition, context_prefix, valid_fields)
+                if_cond = f"if {cond_code}" if (cond_code.startswith("(") and cond_code.endswith(")")) else f"if ({cond_code})"
                 if val_code:
-                    self.emit(f"if ({cond_code}) return {val_code};")
+                    self.emit(f"{if_cond} return {val_code};")
                 else:
-                    self.emit(f"if ({cond_code}) return;")
+                    self.emit(f"{if_cond} return;")
             else:
                 if val_code:
                     self.emit(f"return {val_code};")
@@ -355,10 +458,20 @@ class CodeGenerator:
                     self.emit("return;")
 
         elif isinstance(stmt, BreakStmt):
-            self.emit("break;")
+            if stmt.guard_condition:
+                cond_code = self.generate_expr(stmt.guard_condition, context_prefix, valid_fields)
+                if_cond = f"if {cond_code}" if (cond_code.startswith("(") and cond_code.endswith(")")) else f"if ({cond_code})"
+                self.emit(f"{if_cond} break;")
+            else:
+                self.emit("break;")
 
         elif isinstance(stmt, ContinueStmt):
-            self.emit("continue;")
+            if stmt.guard_condition:
+                cond_code = self.generate_expr(stmt.guard_condition, context_prefix, valid_fields)
+                if_cond = f"if {cond_code}" if (cond_code.startswith("(") and cond_code.endswith(")")) else f"if ({cond_code})"
+                self.emit(f"{if_cond} continue;")
+            else:
+                self.emit("continue;")
 
         elif isinstance(stmt, PrintStmt):
             self.generate_print(stmt, context_prefix, valid_fields)
@@ -550,6 +663,115 @@ class CodeGenerator:
         else:
             self.emit(f'printf("{new_fmt_clean}");')
 
+    def resolve_method_callee(self, recv_type: str, method: str, target: ASTNode) -> str:
+        # Returns underlying free-function name, e.g. len on str -> str_len.
+        # Old underscore names keep working; this only resolves dot-methods.
+        if method == "type":
+            return "__type__"
+        # Literal-based refinement when symbol type is generic int
+        if isinstance(target, Literal) and target.lit_type == "str":
+            recv_type = "str"
+        if recv_type == "str":
+            if method in STR_METHODS:
+                return STR_METHODS[method]
+        elif recv_type == "vec":
+            if method in VEC_METHODS:
+                return VEC_METHODS[method]
+        elif recv_type == "vec_str":
+            if method in VEC_STR_METHODS:
+                return VEC_STR_METHODS[method]
+        elif recv_type == "map":
+            if method in MAP_METHODS:
+                return MAP_METHODS[method]
+        elif recv_type == "sb":
+            if method in SB_METHODS:
+                return SB_METHODS[method]
+        elif recv_type == "arena":
+            if method in ARENA_METHODS:
+                return ARENA_METHODS[method]
+        # Unknown receiver: try unique mapping (contains/join/has/append/...)
+        if method in UNIQUE_METHODS:
+            return UNIQUE_METHODS[method]
+        # Ambiguous len/get/set/push/free with unknown type: guess by method
+        # name family so `x.len()` still compiles; type-known paths above win.
+        if method == "len":
+            return "str_len"
+        if method in ("get", "set", "push", "free"):
+            return method
+        raise ValueError(f"unknown method '{method}' for receiver type '{recv_type}'")
+
+    def generate_method_call(self, expr, context_prefix: str = "", valid_fields=None) -> str:
+        # `x.type()` mirrors `x.type` (compile-time string).
+        if expr.method == "type":
+            recv_t = self.infer_expr_type(expr.target)
+            if isinstance(expr.target, Literal):
+                recv_t = expr.target.lit_type
+            if isinstance(expr.target, Identifier):
+                cand = self.symbol_types.get(expr.target.name, "")
+                if cand:
+                    recv_t = cand
+            safe = recv_t if recv_t else "int"
+            return f'"{safe}"'
+        recv_t = self.infer_expr_type(expr.target)
+        # If inference defaulted to int but target is a literal/var with known kind, refine.
+        if isinstance(expr.target, Identifier):
+            cand = self.symbol_types.get(expr.target.name, "")
+            if cand:
+                recv_t = cand
+        callee = self.resolve_method_callee(recv_t, expr.method, expr.target)
+        recv_code = self.generate_expr(expr.target, context_prefix, valid_fields)
+        arg_codes = [recv_code]
+        for a in expr.args:
+            arg_codes.append(self.generate_expr(a, context_prefix, valid_fields))
+        # Reuse free-function codegen so pointer args (&sb/&vec/...) are handled.
+        synth = CallExpr(callee=callee, args=[], named_args=[], line=expr.line, col=expr.col)
+        # Build synthetic arg ASTs: receiver + original args as source-level exprs.
+        # To reuse to_ptr logic, call generate_expr on a fabricated CallExpr by
+        # temporarily dispatching through the free-function branches below.
+        # Simplest: construct C directly via existing free-function patterns by
+        # delegating to generate_expr(CallExpr).
+        # We emulate by creating identifier placeholders is complex, so handle
+        # pointer-taking receivers here (vec/sb/map/arena take pointer).
+        ptr_methods = {"vec_push", "vec_get", "vec_set", "vec_len", "vec_free",
+                       "vec_str_push", "vec_str_get", "vec_str_len", "vec_str_join", "vec_str_free",
+                       "map_set", "map_get", "map_has", "map_len", "map_free",
+                       "sb_append", "sb_append_char", "sb_build", "sb_free", "sb_len",
+                       "arena_alloc", "arena_reset", "arena_destroy"}
+        if callee in ptr_methods:
+            arg_codes[0] = self.to_ptr(recv_code)
+        # str_index_of has optional start default 0
+        if callee == "ktl_str_index_of" or callee == "str_index_of":
+            if len(arg_codes) == 2:
+                # receiver + needle, need start default
+                pass
+        # Emit via the same free-function mapping used for CallExpr so output
+        # stays `ktl_*` (e.g. ktl_str_len) rather than alias.
+        # Build a CallExpr with already-rendered args is not directly supported,
+        # so render manually: map alias -> ktl_* then join.
+        alias_to_ktl = {
+            "str_len": "ktl_str_len", "str_eq": "ktl_str_eq", "str_concat": "ktl_str_concat",
+            "str_trim": "ktl_str_trim", "str_to_lower": "ktl_str_to_lower", "str_to_upper": "ktl_str_to_upper",
+            "str_replace": "ktl_str_replace", "str_repeat": "ktl_str_repeat", "str_split_at": "ktl_str_split_at",
+            "str_count": "ktl_str_count", "str_char_at": "ktl_str_char_at", "str_sub": "ktl_str_sub",
+            "str_from_char": "ktl_str_from_char", "str_starts_with": "ktl_str_starts_with",
+            "str_ends_with": "ktl_str_ends_with", "str_contains": "ktl_str_contains",
+            "str_index_of": "ktl_str_index_of", "parse_int": "ktl_parse_int",
+            "vec_push": "ktl_vec_push", "vec_get": "ktl_vec_get", "vec_set": "ktl_vec_set",
+            "vec_len": "ktl_vec_len", "vec_free": "ktl_vec_free",
+            "vec_str_push": "ktl_vec_str_push", "vec_str_get": "ktl_vec_str_get",
+            "vec_str_len": "ktl_vec_str_len", "vec_str_join": "ktl_vec_str_join", "vec_str_free": "ktl_vec_str_free",
+            "map_set": "ktl_map_set", "map_get": "ktl_map_get", "map_has": "ktl_map_has",
+            "map_len": "ktl_map_len", "map_free": "ktl_map_free",
+            "sb_append": "ktl_sb_append", "sb_append_char": "ktl_sb_append_char", "sb_build": "ktl_sb_build",
+            "sb_free": "ktl_sb_free", "sb_len": "ktl_sb_len",
+            "arena_alloc": "ktl_arena_alloc", "arena_reset": "ktl_arena_reset", "arena_destroy": "ktl_arena_destroy",
+        }
+        # str_index_of with 2 args (recv+needle) needs default start 0
+        if callee == "str_index_of" and len(arg_codes) == 2:
+            arg_codes.append("0")
+        c_name = alias_to_ktl.get(callee, callee)
+        return f"{c_name}({', '.join(arg_codes)})"
+
     def generate_expr(self, expr: ASTNode, context_prefix: str = "", valid_fields: Optional[Dict[str, str]] = None) -> str:
         if isinstance(expr, Literal):
             if expr.lit_type == "str":
@@ -734,21 +956,29 @@ class CodeGenerator:
             if expr.callee == "sb_free":
                 sb = self.generate_expr(expr.args[0], context_prefix, valid_fields)
                 return f"ktl_sb_free({self.to_ptr(sb)})"
+            if expr.callee == "sb_len":
+                sb = self.generate_expr(expr.args[0], context_prefix, valid_fields)
+                return f"ktl_sb_len({self.to_ptr(sb)})"
             # Check if this function takes named args or has defaults
             arg_list = []
             target_func = self.functions.get(expr.callee)
             if target_func:
                 # Map positional and named args
                 passed_args: Dict[str, str] = {}
+                param_by_name = {p.name: p for p in target_func.params}
                 for i, a in enumerate(expr.args):
                     if i < len(target_func.params):
                         val_c = self.generate_expr(a, context_prefix, valid_fields)
                         param = target_func.params[i]
-                        if param.is_ref and not val_c.startswith("&") and not val_c.startswith("*"):
-                            val_c = f"&{val_c}"
+                        if param.is_ref:
+                            val_c = self.to_ptr(val_c)
                         passed_args[param.name] = val_c
                 for name, a in expr.named_args:
-                    passed_args[name] = self.generate_expr(a, context_prefix, valid_fields)
+                    val_c = self.generate_expr(a, context_prefix, valid_fields)
+                    p = param_by_name.get(name)
+                    if p and p.is_ref:
+                        val_c = self.to_ptr(val_c)
+                    passed_args[name] = val_c
 
                 for p in target_func.params:
                     if p.name in passed_args:
@@ -786,13 +1016,46 @@ class CodeGenerator:
             f_refs = self.struct_field_refs.get(expr.struct_name, {})
             for f_name, f_val in expr.fields:
                 val_c = self.generate_expr(f_val, context_prefix, valid_fields)
-                if f_refs.get(f_name, False) and not val_c.startswith("&") and not val_c.startswith("*"):
-                    val_c = f"&{val_c}"
+                if f_refs.get(f_name, False):
+                    val_c = self.to_ptr(val_c)
                 field_inits.append(f".{f_name} = {val_c}")
             inits_str = ", ".join(field_inits)
             return f"({expr.struct_name}){{ {inits_str} }}"
 
+        if isinstance(expr, MethodCall):
+            return self.generate_method_call(expr, context_prefix, valid_fields)
+
         if isinstance(expr, MemberAccess):
+            # Compile-time `.type` -> string literal (also handles `x.type`
+            # used inside println/match subjects).
+            if expr.member == "type":
+                recv_t = self.infer_expr_type(expr.target)
+                # Literal receivers give precise types even without symbols.
+                if isinstance(expr.target, Literal):
+                    recv_t = expr.target.lit_type
+                if not recv_t or recv_t == "int":
+                    # Fall back: if target is a known struct/enum name, use it.
+                    if isinstance(expr.target, Identifier):
+                        cand = self.symbol_types.get(expr.target.name, "")
+                        if cand:
+                            recv_t = cand
+                safe = recv_t if recv_t else "int"
+                return f'"{safe}"'
+            # Property-style zero-arg methods: `s.len` -> `str_len(s)` etc.
+            # Only when the member is NOT a real struct field / enum variant.
+            _is_struct_field = False
+            _recv_struct = None
+            if isinstance(expr.target, Identifier):
+                _recv_struct = self.symbol_types.get(expr.target.name)
+                if _recv_struct and _recv_struct in self.struct_fields and expr.member in self.struct_fields[_recv_struct]:
+                    _is_struct_field = True
+            _is_enum = isinstance(expr.target, Identifier) and expr.target.name in self.enums
+            if not _is_struct_field and not _is_enum and expr.member in ("len", "trim", "lower", "upper", "build", "to_int"):
+                try:
+                    _mc = MethodCall(target=expr.target, method=expr.member, args=[], named_args=[], line=expr.line, col=expr.col)
+                    return self.generate_method_call(_mc, context_prefix, valid_fields)
+                except Exception:
+                    pass
             if isinstance(expr.target, Identifier) and expr.target.name in self.enums:
                 return f"{expr.target.name}_{expr.member}"
             tgt = self.generate_expr(expr.target, context_prefix, valid_fields)

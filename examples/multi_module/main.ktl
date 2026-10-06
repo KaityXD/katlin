@@ -1,0 +1,17 @@
+import "math.ktl";
+import "printer.ktl";
+
+fn main() {
+    println("=== Multi-Module Katlin Showcase ===");
+    v1 := Vec2{ x = 3, y = 4 };
+    v2 := Vec2{ x = 5, y = 12 };
+
+    print_vec("Vector 1", v1);
+    print_vec("Vector 2", v2);
+
+    sum := vec_add(v1, v2);
+    print_vec("Sum", sum);
+
+    dot := vec_dot(v1, v2);
+    println("Dot product: %", dot);
+}

@@ -1,0 +1,103 @@
+// examples/realworld_showcase.ktl
+// Demonstrates Katlin's real-world standard library:
+// - Advanced String manipulation (trim, replace, cases, split_at, count, repeat)
+// - Dynamic String Vectors (vec_str)
+// - Key-Value Hash Maps (map)
+// - Directory & File System operations (dir_create, dir_list, file_size, file_is_dir)
+// - Command output capture (cmd_output)
+// - Random numbers & Time (rand_int, time_unix, sleep_ms)
+
+fn main {
+    println("=== Katlin Real-World Standard Library Showcase ===");
+
+    // 1. Advanced String Utilities
+    raw_str := "   Hello, Katlin World!   ";
+    trimmed := str_trim(raw_str);
+    println("Trimmed: '%'", trimmed);
+
+    replaced := str_replace(trimmed, "World", "Universe");
+    println("Replaced: '%'", replaced);
+
+    upper := str_to_upper(replaced);
+    lower := str_to_lower(replaced);
+    println("Upper: '%'", upper);
+    println("Lower: '%'", lower);
+
+    repeated := str_repeat("*-", 5);
+    println("Repeated: '%'", repeated);
+
+    sentence := "GET /api/v1/users HTTP/1.1";
+    method := str_split_at(sentence, " ", 0);
+    path := str_split_at(sentence, " ", 1);
+    proto := str_split_at(sentence, " ", 2);
+    println("HTTP parsed -> method: '%', path: '%', proto: '%'", method, path, proto);
+
+    count := str_count("banana", "an");
+    println("Occurrences of 'an' in 'banana': %", count);
+
+    // 2. Dynamic String Vector (vec_str)
+    println("\n--- Testing Dynamic String Vector (vec_str) ---");
+    mut v := vec_str_create(4);
+    vec_str_push(v, "apple");
+    vec_str_push(v, "orange");
+    vec_str_push(v, "banana");
+    vec_str_push(v, "grape");
+
+    println("Vector length: %", vec_str_len(v));
+    for i in 0..vec_str_len(v) {
+        println("  Item %: %", i, vec_str_get(v, i));
+    }
+
+    joined := vec_str_join(v, ", ");
+    println("Joined list: [%]", joined);
+    vec_str_free(v);
+
+    // 3. Key-Value String Map (map)
+    println("\n--- Testing Key-Value Map (map) ---");
+    mut config := map_create(16);
+    map_set(config, "server.host", "127.0.0.1");
+    map_set(config, "server.port", "8080");
+    map_set(config, "env", "production");
+
+    println("Map entries: %", map_len(config));
+    println("server.host = %", map_get(config, "server.host"));
+    println("server.port = %", map_get(config, "server.port"));
+    println("env = %", map_get(config, "env"));
+    println("Has 'server.port': %", map_has(config, "server.port"));
+    println("Has 'missing.key': %", map_has(config, "missing.key"));
+    map_free(config);
+
+    // 4. File & Directory System
+    println("\n--- Testing Filesystem & Directories ---");
+    test_dir := ".build/test_dir_showcase";
+    dir_create(test_dir);
+    test_file := str_concat(test_dir, "/test.txt");
+    file_write(test_file, "Katlin real-world file test!\nLine 2\n");
+
+    println("Is directory: %", file_is_dir(test_dir));
+    println("File size of %: % bytes", test_file, file_size(test_file));
+
+    dir_contents := dir_list(test_dir);
+    println("Directory listing:\n%", dir_contents);
+
+    file_remove(test_file);
+    println("File removed: exists=%", file_exists(test_file));
+
+    // 5. Subprocess Output Capture
+    println("\n--- Testing Subprocess Command Output Capture ---");
+    date_out := str_trim(cmd_output("uname -s"));
+    println("Kernel Name: %", date_out);
+
+    // 6. Time & Random numbers
+    println("\n--- Testing Time & Random ---");
+    now := time_unix();
+    println("Current Unix timestamp: %", now);
+
+    rand_seed(12345);
+    r1 := rand_int(1, 100);
+    r2 := rand_int(1, 100);
+    r3 := rand_int(1, 100);
+    println("Random numbers [1..100]: %, %, %", r1, r2, r3);
+
+    println("\n✓ Real-world showcase executed successfully!");
+}

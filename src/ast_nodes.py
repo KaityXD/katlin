@@ -62,11 +62,11 @@ class ReturnStmt(ASTNode):
 
 @dataclass
 class BreakStmt(ASTNode):
-    pass
+    guard_condition: Optional[ASTNode] = None
 
 @dataclass
 class ContinueStmt(ASTNode):
-    pass
+    guard_condition: Optional[ASTNode] = None
 
 @dataclass
 class PrintStmt(ASTNode):
@@ -159,6 +159,13 @@ class StructInit(ASTNode):
 class MemberAccess(ASTNode):
     target: Optional[ASTNode] = None
     member: str = ""
+
+@dataclass
+class MethodCall(ASTNode):
+    target: Optional[ASTNode] = None
+    method: str = ""
+    args: List[ASTNode] = field(default_factory=list)
+    named_args: List[Tuple[str, ASTNode]] = field(default_factory=list)
 
 @dataclass
 class EnumDef(ASTNode):

@@ -1,7 +1,5 @@
-#strict
-
-mut data := 5;
-
-fn main{
-	println("%", data.type);
+fn main {
+    text := "idkbro123";
+    println("String: %", text);
+    println("Length: %", str_len(text));
 }

@@ -8,7 +8,7 @@ from src.ast_nodes import (
     Program, FunctionDef, Parameter, VarDecl, AssignStmt, ReturnStmt, BreakStmt, ContinueStmt,
     PrintStmt, CallExpr, ChainedCall, IfStmt, WhileStmt, LoopStmt, ForStmt,
     RawBlock, BinaryOp, UnaryOp, Literal, Identifier, ExprStmt, IndexAssign, IndexExpr,
-    StructField, StructDef, StructInit, MemberAccess, EnumDef, OrExpr, MatchBranch, MatchStmt, TestBlock, ASTNode
+    StructField, StructDef, StructInit, MemberAccess, MethodCall, EnumDef, OrExpr, MatchBranch, MatchStmt, TestBlock, ASTNode
 )
 
 class Parser:
@@ -310,13 +310,19 @@ class Parser:
 
         # Break statement
         if self.match(TokenType.BREAK):
+            guard = None
+            if self.match(TokenType.IF):
+                guard = self.parse_expression()
             self.skip_semicolons()
-            return BreakStmt(line=tok.line, col=tok.col)
+            return BreakStmt(guard_condition=guard, line=tok.line, col=tok.col)
 
         # Continue statement
         if self.match(TokenType.CONTINUE):
+            guard = None
+            if self.match(TokenType.IF):
+                guard = self.parse_expression()
             self.skip_semicolons()
-            return ContinueStmt(line=tok.line, col=tok.col)
+            return ContinueStmt(guard_condition=guard, line=tok.line, col=tok.col)
 
         # Print / Println statement
         if tok.type in (TokenType.PRINTLN, TokenType.PRINT):
@@ -568,10 +574,18 @@ class Parser:
         return left
 
     def parse_bitwise_or(self) -> ASTNode:
-        left = self.parse_bitwise_and()
-        while self.peek().value == "|":
+        left = self.parse_bitwise_xor()
+        while self.peek().type == TokenType.PIPE or self.peek().value == "|":
             self.advance()
             op = "|"
+            right = self.parse_bitwise_xor()
+            left = BinaryOp(left=left, op=op, right=right, line=left.line, col=left.col)
+        return left
+
+    def parse_bitwise_xor(self) -> ASTNode:
+        left = self.parse_bitwise_and()
+        while self.match(TokenType.CARET):
+            op = "^"
             right = self.parse_bitwise_and()
             left = BinaryOp(left=left, op=op, right=right, line=left.line, col=left.col)
         return left
@@ -585,8 +599,16 @@ class Parser:
         return left
 
     def parse_comparison(self) -> ASTNode:
-        left = self.parse_additive()
+        left = self.parse_shift()
         while self.peek().type in (TokenType.EQ, TokenType.NEQ, TokenType.LT, TokenType.GT, TokenType.LTE, TokenType.GTE):
+            op = self.advance().value
+            right = self.parse_shift()
+            left = BinaryOp(left=left, op=op, right=right, line=left.line, col=left.col)
+        return left
+
+    def parse_shift(self) -> ASTNode:
+        left = self.parse_additive()
+        while self.peek().type in (TokenType.SHL, TokenType.SHR):
             op = self.advance().value
             right = self.parse_additive()
             left = BinaryOp(left=left, op=op, right=right, line=left.line, col=left.col)
@@ -615,6 +637,30 @@ class Parser:
             return UnaryOp(op=op, operand=operand, line=operand.line, col=operand.col)
         return self.parse_call_or_primary()
 
+    def parse_postfix(self, node: ASTNode) -> ASTNode:
+        # Handles trailing `.member`, `.method(args)` and `[idx]` in a loop,
+        # so string literals, calls and member chains can all be receivers:
+        # `"hi".len()`, `s.trim().upper()`, `v.get(0)`, `p.x`
+        while True:
+            if self.peek().type == TokenType.DOT:
+                self.advance()  # '.'
+                m_tok = self.peek()
+                m_name = self.consume(TokenType.IDENT, "Expected member name after '.'").value
+                if self.peek().type == TokenType.LPAREN:
+                    m_args, m_named = self.parse_call_args()
+                    node = MethodCall(target=node, method=m_name, args=m_args, named_args=m_named, line=m_tok.line, col=m_tok.col)
+                else:
+                    node = MemberAccess(target=node, member=m_name, line=m_tok.line, col=m_tok.col)
+                continue
+            if self.peek().type == TokenType.LBRACKET:
+                self.advance()  # '['
+                idx_node = self.parse_expression()
+                self.consume(TokenType.RBRACKET)
+                node = IndexExpr(target=node, index=idx_node, line=node.line, col=node.col)
+                continue
+            break
+        return node
+
     def parse_call_or_primary(self) -> ASTNode:
         tok = self.peek()
 
@@ -622,17 +668,21 @@ class Parser:
         if self.match(TokenType.LPAREN):
             expr = self.parse_expression()
             self.consume(TokenType.RPAREN)
-            return expr
+            return self.parse_postfix(expr)
 
         # Literals
         if self.match(TokenType.INT_LIT):
-            return Literal(value=int(tok.value.replace("_", ""), 0), lit_type="int", line=tok.line, col=tok.col)
+            node = Literal(value=int(tok.value.replace("_", ""), 0), lit_type="int", line=tok.line, col=tok.col)
+            return self.parse_postfix(node)
         if self.match(TokenType.FLOAT_LIT):
-            return Literal(value=float(tok.value.replace("_", "")), lit_type="float", line=tok.line, col=tok.col)
+            node = Literal(value=float(tok.value.replace("_", "")), lit_type="float", line=tok.line, col=tok.col)
+            return self.parse_postfix(node)
         if self.match(TokenType.STR_LIT):
-            return Literal(value=tok.value, lit_type="str", line=tok.line, col=tok.col)
+            node = Literal(value=tok.value, lit_type="str", line=tok.line, col=tok.col)
+            return self.parse_postfix(node)
         if self.match(TokenType.BOOL_LIT):
-            return Literal(value=(tok.value == "true"), lit_type="bool", line=tok.line, col=tok.col)
+            node = Literal(value=(tok.value == "true"), lit_type="bool", line=tok.line, col=tok.col)
+            return self.parse_postfix(node)
 
         # Identifier or Call (including chained call)
         if tok.type == TokenType.IDENT:
@@ -643,18 +693,31 @@ class Parser:
                 args, named_args = self.parse_call_args()
                 base_call = CallExpr(callee=name, args=args, named_args=named_args, line=tok.line, col=tok.col)
                 
-                # Check for chaining: .start() .retry(...)
+                # Check for chaining: .start() .retry(...) (inner-function style).
+                # Stdlib dot-methods (len/push/trim/...) on a call result are
+                # left for parse_postfix so they become MethodCall.
+                _stdlib = {"len", "push", "get", "set", "append", "append_char", "build", "free", "trim", "lower", "upper", "replace", "repeat", "split_at", "count", "char_at", "sub", "starts_with", "ends_with", "contains", "index_of", "eq", "concat", "join", "has", "alloc", "reset", "destroy", "to_int", "parse_int", "type"}
                 chain: List[CallExpr] = []
-                while self.match(TokenType.DOT):
+                while self.peek().type == TokenType.DOT and self.peek(1).type == TokenType.IDENT and self.peek(2).type == TokenType.LPAREN and self.peek(1).value not in _stdlib:
+                    self.advance()  # '.'
                     method_name = self.consume(TokenType.IDENT, "Expected method name after '.'").value
-                    m_args, m_named = [], []
-                    if self.peek().type == TokenType.LPAREN:
-                        m_args, m_named = self.parse_call_args()
+                    m_args, m_named = self.parse_call_args()
                     chain.append(CallExpr(callee=method_name, args=m_args, named_args=m_named, line=tok.line, col=tok.col))
                 
                 if chain:
-                    return ChainedCall(base_call=base_call, chain=chain, line=tok.line, col=tok.col)
-                return base_call
+                    # Heuristic: single zero-arg or known inner-style chain on a
+                    # Capital/call base stays ChainedCall; stdlib method chains
+                    # become nested MethodCalls so they desugar to str_/vec_/etc.
+                    # For now preserve ChainedCall when the base callee is not a
+                    # known stdlib free function and chain methods look like
+                    # user methods. The codegen handles both.
+                    node: ASTNode = ChainedCall(base_call=base_call, chain=chain, line=tok.line, col=tok.col)
+                    # Allow further `.member` / `[idx]` after the chain
+                    return self.parse_postfix(node)
+                # No dot-chain: the call itself may still be a receiver:
+                # `make_vec().push(1)` -> MethodCall(CallExpr, push)
+                node2: ASTNode = base_call
+                return self.parse_postfix(node2)
 
             # Struct initialization? e.g. Player{ id = 1, name = "Kaitlyn" }
             if (name in self.struct_names or (len(name) > 0 and name[0].isupper())) and self.peek().type == TokenType.LBRACE and self.peek(1).type == TokenType.IDENT and self.peek(2).type in (TokenType.ASSIGN, TokenType.COLON):
@@ -669,21 +732,19 @@ class Parser:
                     self.match(TokenType.COMMA)
                     self.skip_semicolons()
                 self.consume(TokenType.RBRACE)
-                return StructInit(struct_name=name, fields=fields, line=tok.line, col=tok.col)
+                node3: ASTNode = StructInit(struct_name=name, fields=fields, line=tok.line, col=tok.col)
+                return self.parse_postfix(node3)
 
             # Index access? e.g. buffer[i]
             if self.peek().type == TokenType.LBRACKET:
                 self.advance() # [
                 idx_node = self.parse_expression()
                 self.consume(TokenType.RBRACKET)
-                return IndexExpr(target=Identifier(name=name, line=tok.line, col=tok.col), index=idx_node, line=tok.line, col=tok.col)
+                node4: ASTNode = IndexExpr(target=Identifier(name=name, line=tok.line, col=tok.col), index=idx_node, line=tok.line, col=tok.col)
+                return self.parse_postfix(node4)
 
             node: ASTNode = Identifier(name=name, line=tok.line, col=tok.col)
-            while self.match(TokenType.DOT):
-                m_name = self.consume(TokenType.IDENT).value
-                node = MemberAccess(target=node, member=m_name, line=tok.line, col=tok.col)
-
-            return node
+            return self.parse_postfix(node)
 
         token_len = max(1, len(str(tok.value))) if tok.value else 1
         raise KatlinParseError(

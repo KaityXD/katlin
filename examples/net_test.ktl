@@ -1,0 +1,30 @@
+fn main {
+    port := 9876;
+    server := net_tcp_listen(port);
+    if server < 0 {
+        println("Listen failed on port %", port);
+        return;
+    }
+
+    client := net_tcp_connect("127.0.0.1", port);
+    if client < 0 {
+        println("Connect failed");
+        net_close(server);
+        return;
+    }
+
+    conn := net_tcp_accept(server);
+    net_tcp_write(client, "PING from client");
+
+    msg := net_tcp_read(conn, 128);
+    println("Server received: '%'", msg);
+
+    net_tcp_write(conn, "PONG from server");
+    reply := net_tcp_read(client, 128);
+    println("Client received: '%'", reply);
+
+    net_close(client);
+    net_close(conn);
+    net_close(server);
+    println("✓ TCP socket networking verified!");
+}

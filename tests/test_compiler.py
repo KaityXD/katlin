@@ -119,6 +119,49 @@ class TestEndToEndExecution(unittest.TestCase):
         exit_code = compile_katlin(sample, run_after=False, optimize=True)
         self.assertEqual(exit_code, 0)
 
+    def test_run_multi_module(self):
+        sample = os.path.join(ROOT_DIR, "examples", "multi_module", "main.ktl")
+        bin_path = os.path.join(ROOT_DIR, ".build", "bin", "multi_module_test")
+        exit_code = compile_katlin(sample, output_binary=bin_path, run_after=False, optimize=True)
+        self.assertEqual(exit_code, 0)
+        res = subprocess.run([bin_path], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("Vector 1: (3, 4)", res.stdout)
+        self.assertIn("Sum: (8, 16)", res.stdout)
+        self.assertIn("Dot product: 63", res.stdout)
+
+    def test_missing_import_raises_error(self):
+        from src.compiler import bundle_imports
+        from src.diagnostics import KatlinError
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".ktl", mode="w", delete=False) as f:
+            f.write('import "nonexistent_file_xyz.ktl";\nfn main() {}\n')
+            temp_path = f.name
+        try:
+            with self.assertRaises(KatlinError) as ctx:
+                bundle_imports(temp_path)
+            self.assertIn("cannot find imported module", str(ctx.exception))
+        finally:
+            os.remove(temp_path)
+
+    def test_imported_main_raises_error(self):
+        from src.compiler import bundle_imports
+        from src.diagnostics import KatlinError
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".ktl", mode="w", delete=False) as f_sub:
+            f_sub.write('fn main() { println("sub"); }\n')
+            sub_path = f_sub.name
+        with tempfile.NamedTemporaryFile(suffix=".ktl", mode="w", delete=False) as f_top:
+            f_top.write(f'import "{sub_path}";\nfn main() {{ println("top"); }}\n')
+            top_path = f_top.name
+        try:
+            with self.assertRaises(KatlinError) as ctx:
+                bundle_imports(top_path)
+            self.assertIn("cannot define 'fn main'", str(ctx.exception))
+        finally:
+            os.remove(sub_path)
+            os.remove(top_path)
+
 class TestDiagnostics(unittest.TestCase):
     def test_lexer_error_diagnostic(self):
         from src.diagnostics import KatlinLexerError, render_diagnostic

@@ -1,0 +1,155 @@
+// examples/weird_syntax.ktl
+// Testing edge-case, weird, and expressive syntax combinations in Katlin:
+// 1. Parameterless fn with and without parentheses: `fn f { }` and `fn g() { }`
+// 2. Postfix guard clauses: `break if cond;`, `continue if cond;`, `return if cond;`
+// 3. Named arguments called completely out of order with defaults omitted
+// 4. `or` fallback expressions
+// 5. Reference struct fields mutating caller
+// 6. Infinite `loop` construct with postfix break
+// 7. Bitwise operators (&, |, ^, >>) without false-positive borrows
+// 8. Trailing commas in struct initializers
+// 9. `for ... in ... step ...` loops
+// 10. Nested function calls inside expressions
+
+struct NumberBox {
+    int &ref_val;
+}
+
+struct Point3D {
+    int x;
+    int y;
+    int z;
+}
+
+enum State {
+    Off,
+    Active,
+    Standby
+}
+
+// 1. Parameterless fn without parentheses
+fn greet_no_parens {
+    println("Greeting from fn without parens!");
+}
+
+// Parameterless fn with parentheses
+fn greet_with_parens() {
+    println("Greeting from fn with parens!");
+}
+
+// 3. Named arguments with defaults
+fn configure_device(int id, int baud = 9600, bool parity = false, int timeout = 100) -> int {
+    mut score := id + baud + timeout;
+    if parity {
+        score += 1;
+    }
+    return score;
+}
+
+// 4. `or` fallback with early return
+fn check_positive(int n) -> int {
+    return n or 42;
+}
+
+fn mutate_via_struct_ref(int &dest, int new_val) {
+    box := NumberBox{ ref_val = dest };
+    box.ref_val = new_val;
+}
+
+fn main {
+    println("=== Testing Weird & Edge-Case Katlin Syntax ===");
+
+    // 1. Function forms
+    greet_no_parens();
+    greet_with_parens();
+
+    // 2. Postfix guard in a loop
+    println("\n1. Postfix guards in while loop:");
+    mut i := 0;
+    while i < 10 {
+        i += 1;
+        continue if i == 2;
+        println("  loop i = %", i);
+        break if i == 4;
+    }
+
+    // 3. Out-of-order named arguments with defaults
+    println("\n2. Out-of-order named args with defaults:");
+    res1 := configure_device(1); // all defaults
+    res2 := configure_device(2, timeout = 500, parity = true); // skip baud, reverse order
+    res3 := configure_device(3, timeout = 50, baud = 115200); // reverse order
+    println("  res1 (all defaults): %", res1);
+    println("  res2 (custom timeout & parity): %", res2);
+    println("  res3 (custom timeout & baud): %", res3);
+
+    // 4. `or` fallback
+    println("\n3. 'or' fallback expressions:");
+    zero_val := 0;
+    non_zero := 99;
+    f1 := zero_val or 777;
+    f2 := non_zero or 777;
+    println("  0 or 777 = %", f1);
+    println("  99 or 777 = %", f2);
+
+    // 5. Reference struct field mutation
+    println("\n4. Mutating variable through reference struct field:");
+    mut target_var := 10;
+    println("  Before: %", target_var);
+    mutate_via_struct_ref(&target_var, 999);
+    println("  After:  %", target_var);
+
+    // 6. Infinite `loop` construct
+    println("\n5. Infinite 'loop' with postfix break:");
+    mut counter := 0;
+    loop {
+        counter += 1;
+        break if counter == 5;
+    }
+    println("  Loop stopped at counter = %", counter);
+
+    // 7. Bitwise operators without tripping borrow checker
+    println("\n6. Bitwise expressions:");
+    flags := 0b10110011; // 179
+    low_nibble := flags & 0x0F;
+    shifted := (flags >> 4) & 0x0F;
+    xor_res := flags ^ 0xFF;
+    println("  low_nibble = %", low_nibble);
+    println("  shifted    = %", shifted);
+    println("  xor_res    = %", xor_res);
+
+    // 8. Trailing commas in struct initializer
+    println("\n7. Trailing commas in struct literals:");
+    pt := Point3D{
+        x = 10,
+        y = 20,
+        z = 30,
+    };
+    println("  Point3D: (%, %, %)", pt.x, pt.y, pt.z);
+
+    // 9. For loop with custom step
+    println("\n8. For loop with step:");
+    mut step_sum := 0;
+    for s in 0..20 step 5 {
+        println("  step s = %", s);
+        step_sum += s;
+    }
+    println("  step_sum = %", step_sum);
+
+    // 10. Enum matching
+    println("\n9. Enum match with dots:");
+    st := State.Active;
+    mut st_code := 0;
+    match st {
+        case .Off: { st_code = 1; }
+        case .Active: { st_code = 2; }
+        case .Standby: { st_code = 3; }
+    }
+    println("  State.Active matched code = %", st_code);
+
+    // 11. Nested calls inside string expressions
+    println("\n10. Deeply nested expression calls:");
+    formatted := str_concat(">>> ", str_concat(str_to_upper(str_trim("   edge case   ")), " <<<"));
+    println("  Result: %", formatted);
+
+    println("\n✓ All weird and expressive syntax passed!");
+}

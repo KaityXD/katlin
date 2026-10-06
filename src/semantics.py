@@ -6,7 +6,7 @@ from src.ast_nodes import (
     Program, FunctionDef, Parameter, VarDecl, AssignStmt, ReturnStmt,
     PrintStmt, CallExpr, ChainedCall, IfStmt, WhileStmt, LoopStmt, ForStmt,
     RawBlock, BinaryOp, UnaryOp, Literal, Identifier, ExprStmt, IndexAssign, IndexExpr,
-    StructField, StructDef, StructInit, MemberAccess, EnumDef, OrExpr, MatchBranch, MatchStmt, TestBlock, ASTNode
+    StructField, StructDef, StructInit, MemberAccess, MethodCall, EnumDef, OrExpr, MatchBranch, MatchStmt, TestBlock, ASTNode
 )
 
 from src.diagnostics import KatlinSemanticError
@@ -144,6 +144,18 @@ class SemanticAnalyzer:
 
             for a in expr.args:
                 self.analyze_expr(a, is_strict)
+            for _, a in getattr(expr, 'named_args', []):
+                self.analyze_expr(a, is_strict)
+
+        elif isinstance(expr, MethodCall):
+            self.analyze_expr(expr.target, is_strict)
+            for a in expr.args:
+                self.analyze_expr(a, is_strict)
+            for _, a in getattr(expr, 'named_args', []):
+                self.analyze_expr(a, is_strict)
+
+        elif isinstance(expr, MemberAccess):
+            self.analyze_expr(expr.target, is_strict)
 
         elif isinstance(expr, BinaryOp):
             self.analyze_expr(expr.left, is_strict)

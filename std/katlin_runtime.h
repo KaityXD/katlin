@@ -10,7 +10,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-
+#include <ctype.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <time.h>
 #include <sys/wait.h>
 
@@ -340,6 +348,10 @@ static inline void ktl_sb_free(ktl_sb* sb) {
     sb->cap = 0;
 }
 
+static inline ktl_int ktl_sb_len(ktl_sb* sb) {
+    return sb ? (ktl_int)sb->len : 0;
+}
+
 // File I/O
 static inline bool ktl_file_exists(const char* path) {
     return access(path, F_OK) == 0;
@@ -485,6 +497,434 @@ static inline void ktl_arena_destroy(ktl_arena* a) {
     a->offset = 0;
 }
 
+// -------------------------------------------------------------
+// Advanced String Utilities
+// -------------------------------------------------------------
+static inline const char* ktl_str_trim(const char* s) {
+    if (!s) return "";
+    while (*s && isspace((unsigned char)*s)) s++;
+    if (*s == 0) return "";
+    const char* end = s + strlen(s) - 1;
+    while (end > s && isspace((unsigned char)*end)) end--;
+    size_t len = (size_t)(end - s + 1);
+    char* buf = (char*)malloc(len + 1);
+    memcpy(buf, s, len);
+    buf[len] = '\0';
+    return buf;
+}
+
+static inline const char* ktl_str_to_lower(const char* s) {
+    if (!s) return "";
+    size_t len = strlen(s);
+    char* buf = (char*)malloc(len + 1);
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = (char)tolower((unsigned char)s[i]);
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+static inline const char* ktl_str_to_upper(const char* s) {
+    if (!s) return "";
+    size_t len = strlen(s);
+    char* buf = (char*)malloc(len + 1);
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = (char)toupper((unsigned char)s[i]);
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+static inline const char* ktl_str_replace(const char* s, const char* old_sub, const char* new_sub) {
+    if (!s) return "";
+    if (!old_sub || strlen(old_sub) == 0) return s;
+    if (!new_sub) new_sub = "";
+    size_t old_len = strlen(old_sub);
+    ktl_sb sb = ktl_sb_create(strlen(s) + 16);
+    const char* cur = s;
+    while (*cur) {
+        const char* p = strstr(cur, old_sub);
+        if (!p) {
+            ktl_sb_append(&sb, cur);
+            break;
+        }
+        size_t dist = (size_t)(p - cur);
+        if (dist > 0) {
+            char* part = (char*)malloc(dist + 1);
+            memcpy(part, cur, dist);
+            part[dist] = '\0';
+            ktl_sb_append(&sb, part);
+            free(part);
+        }
+        ktl_sb_append(&sb, new_sub);
+        cur = p + old_len;
+    }
+    return ktl_sb_build(&sb);
+}
+
+static inline const char* ktl_str_repeat(const char* s, ktl_int count) {
+    if (!s || count <= 0) return "";
+    size_t slen = strlen(s);
+    char* buf = (char*)malloc(slen * count + 1);
+    buf[0] = '\0';
+    for (int i = 0; i < count; i++) {
+        memcpy(buf + i * slen, s, slen);
+    }
+    buf[slen * count] = '\0';
+    return buf;
+}
+
+static inline const char* ktl_str_split_at(const char* s, const char* delim, ktl_int idx) {
+    if (!s || !delim || idx < 0) return "";
+    size_t dlen = strlen(delim);
+    if (dlen == 0) return idx == 0 ? s : "";
+    const char* cur = s;
+    ktl_int cur_idx = 0;
+    while (cur) {
+        const char* next = strstr(cur, delim);
+        if (cur_idx == idx) {
+            size_t part_len = next ? (size_t)(next - cur) : strlen(cur);
+            char* buf = (char*)malloc(part_len + 1);
+            memcpy(buf, cur, part_len);
+            buf[part_len] = '\0';
+            return buf;
+        }
+        if (!next) break;
+        cur = next + dlen;
+        cur_idx++;
+    }
+    return "";
+}
+
+static inline ktl_int ktl_str_count(const char* s, const char* needle) {
+    if (!s || !needle || strlen(needle) == 0) return 0;
+    ktl_int count = 0;
+    size_t nlen = strlen(needle);
+    const char* p = s;
+    while ((p = strstr(p, needle)) != NULL) {
+        count++;
+        p += nlen;
+    }
+    return count;
+}
+
+// -------------------------------------------------------------
+// File & Directory Operations
+// -------------------------------------------------------------
+static inline ktl_i64 ktl_file_size(const char* path) {
+    if (!path) return -1;
+    struct stat st;
+    if (stat(path, &st) != 0) return -1;
+    return (ktl_i64)st.st_size;
+}
+
+static inline bool ktl_file_remove(const char* path) {
+    if (!path) return false;
+    return remove(path) == 0;
+}
+
+static inline bool ktl_file_is_dir(const char* path) {
+    if (!path) return false;
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    return S_ISDIR(st.st_mode);
+}
+
+static inline bool ktl_dir_create(const char* path) {
+    if (!path) return false;
+    struct stat st;
+    if (stat(path, &st) == 0) return S_ISDIR(st.st_mode);
+    return mkdir(path, 0755) == 0;
+}
+
+static inline const char* ktl_dir_list(const char* path) {
+    if (!path) return "";
+    DIR* d = opendir(path);
+    if (!d) return "";
+    ktl_sb sb = ktl_sb_create(256);
+    struct dirent* entry;
+    bool first = true;
+    while ((entry = readdir(d)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        if (!first) ktl_sb_append_char(&sb, '\n');
+        ktl_sb_append(&sb, entry->d_name);
+        first = false;
+    }
+    closedir(d);
+    return ktl_sb_build(&sb);
+}
+
+// -------------------------------------------------------------
+// Subprocess Command Output Capture
+// -------------------------------------------------------------
+static inline const char* ktl_cmd_output(const char* cmd) {
+    if (!cmd) return "";
+    FILE* pipe = popen(cmd, "r");
+    if (!pipe) return "";
+    ktl_sb sb = ktl_sb_create(512);
+    char chunk[256];
+    while (fgets(chunk, sizeof(chunk), pipe) != NULL) {
+        ktl_sb_append(&sb, chunk);
+    }
+    pclose(pipe);
+    return ktl_sb_build(&sb);
+}
+
+// -------------------------------------------------------------
+// Networking & Sockets (Web Services / Microservices)
+// -------------------------------------------------------------
+static inline ktl_int ktl_net_tcp_listen(ktl_int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_port = htons((uint16_t)port);
+    if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, 64) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static inline ktl_int ktl_net_tcp_accept(ktl_int server_fd) {
+    if (server_fd < 0) return -1;
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+    int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+    return client_fd;
+}
+
+static inline const char* ktl_net_tcp_read(ktl_int client_fd, ktl_int max_len) {
+    if (client_fd < 0 || max_len <= 0) return "";
+    char* buf = (char*)malloc(max_len + 1);
+    if (!buf) return "";
+    ssize_t n = recv(client_fd, buf, max_len, 0);
+    if (n <= 0) {
+        free(buf);
+        return "";
+    }
+    buf[n] = '\0';
+    return buf;
+}
+
+static inline ktl_int ktl_net_tcp_write(ktl_int client_fd, const char* data) {
+    if (client_fd < 0 || !data) return -1;
+    size_t len = strlen(data);
+    ssize_t sent = send(client_fd, data, len, 0);
+    return (ktl_int)sent;
+}
+
+static inline ktl_int ktl_net_tcp_connect(const char* host, ktl_int port) {
+    if (!host || port <= 0) return -1;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    struct hostent* he = gethostbyname(host);
+    if (!he) {
+        close(fd);
+        return -1;
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    memcpy(&addr.sin_addr, he->h_addr_list[0], he->h_length);
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static inline void ktl_net_close(ktl_int fd) {
+    if (fd >= 0) close(fd);
+}
+
+// -------------------------------------------------------------
+// Dynamic String Vector (vec_str)
+// -------------------------------------------------------------
+typedef struct {
+    char** data;
+    size_t len;
+    size_t cap;
+} ktl_vec_str;
+
+typedef ktl_vec_str vec_str;
+
+static inline ktl_vec_str ktl_vec_str_create(size_t initial_cap) {
+    ktl_vec_str v;
+    v.cap = initial_cap > 0 ? initial_cap : 8;
+    v.len = 0;
+    v.data = (char**)malloc(v.cap * sizeof(char*));
+    return v;
+}
+
+static inline void ktl_vec_str_push(ktl_vec_str* v, const char* item) {
+    if (!item) item = "";
+    if (v->len >= v->cap) {
+        v->cap = (v->cap * 3) / 2 + 8;
+        v->data = (char**)realloc(v->data, v->cap * sizeof(char*));
+    }
+    size_t slen = strlen(item);
+    char* copy = (char*)malloc(slen + 1);
+    memcpy(copy, item, slen + 1);
+    v->data[v->len++] = copy;
+}
+
+static inline const char* ktl_vec_str_get(ktl_vec_str* v, size_t index) {
+    if (index >= v->len) {
+        ktl_panic("String vector index out of bounds!");
+    }
+    return v->data[index];
+}
+
+static inline ktl_int ktl_vec_str_len(ktl_vec_str* v) {
+    return (ktl_int)v->len;
+}
+
+static inline const char* ktl_vec_str_join(ktl_vec_str* v, const char* delim) {
+    if (!delim) delim = "";
+    if (v->len == 0) return "";
+    ktl_sb sb = ktl_sb_create(128);
+    for (size_t i = 0; i < v->len; i++) {
+        if (i > 0) ktl_sb_append(&sb, delim);
+        ktl_sb_append(&sb, v->data[i]);
+    }
+    return ktl_sb_build(&sb);
+}
+
+static inline void ktl_vec_str_free(ktl_vec_str* v) {
+    if (v->data) {
+        for (size_t i = 0; i < v->len; i++) {
+            if (v->data[i]) free(v->data[i]);
+        }
+        free(v->data);
+        v->data = NULL;
+    }
+    v->len = 0;
+    v->cap = 0;
+}
+
+// -------------------------------------------------------------
+// Key-Value String Map (map)
+// -------------------------------------------------------------
+typedef struct {
+    char* key;
+    char* val;
+} ktl_map_entry;
+
+typedef struct {
+    ktl_map_entry* entries;
+    size_t len;
+    size_t cap;
+} ktl_map;
+
+typedef ktl_map map;
+
+static inline ktl_map ktl_map_create(size_t initial_cap) {
+    ktl_map m;
+    m.cap = initial_cap > 0 ? initial_cap : 16;
+    m.len = 0;
+    m.entries = (ktl_map_entry*)calloc(m.cap, sizeof(ktl_map_entry));
+    return m;
+}
+
+static inline void ktl_map_set(ktl_map* m, const char* key, const char* val) {
+    if (!key) return;
+    if (!val) val = "";
+    for (size_t i = 0; i < m->len; i++) {
+        if (m->entries[i].key && strcmp(m->entries[i].key, key) == 0) {
+            free(m->entries[i].val);
+            size_t vlen = strlen(val);
+            char* vcopy = (char*)malloc(vlen + 1);
+            memcpy(vcopy, val, vlen + 1);
+            m->entries[i].val = vcopy;
+            return;
+        }
+    }
+    if (m->len >= m->cap) {
+        m->cap = m->cap * 2 + 8;
+        m->entries = (ktl_map_entry*)realloc(m->entries, m->cap * sizeof(ktl_map_entry));
+    }
+    size_t klen = strlen(key);
+    char* kcopy = (char*)malloc(klen + 1);
+    memcpy(kcopy, key, klen + 1);
+
+    size_t vlen = strlen(val);
+    char* vcopy = (char*)malloc(vlen + 1);
+    memcpy(vcopy, val, vlen + 1);
+
+    m->entries[m->len].key = kcopy;
+    m->entries[m->len].val = vcopy;
+    m->len++;
+}
+
+static inline const char* ktl_map_get(ktl_map* m, const char* key) {
+    if (!key) return "";
+    for (size_t i = 0; i < m->len; i++) {
+        if (m->entries[i].key && strcmp(m->entries[i].key, key) == 0) {
+            return m->entries[i].val ? m->entries[i].val : "";
+        }
+    }
+    return "";
+}
+
+static inline bool ktl_map_has(ktl_map* m, const char* key) {
+    if (!key) return false;
+    for (size_t i = 0; i < m->len; i++) {
+        if (m->entries[i].key && strcmp(m->entries[i].key, key) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static inline ktl_int ktl_map_len(ktl_map* m) {
+    return (ktl_int)m->len;
+}
+
+static inline void ktl_map_free(ktl_map* m) {
+    if (m->entries) {
+        for (size_t i = 0; i < m->len; i++) {
+            if (m->entries[i].key) free(m->entries[i].key);
+            if (m->entries[i].val) free(m->entries[i].val);
+        }
+        free(m->entries);
+        m->entries = NULL;
+    }
+    m->len = 0;
+    m->cap = 0;
+}
+
+// -------------------------------------------------------------
+// Time, Sleep & Random Numbers
+// -------------------------------------------------------------
+static inline void ktl_sleep_ms(ktl_int ms) {
+    if (ms > 0) {
+        usleep((useconds_t)ms * 1000);
+    }
+}
+
+static inline ktl_i64 ktl_time_unix(void) {
+    return (ktl_i64)time(NULL);
+}
+
+static inline void ktl_rand_seed(ktl_int seed) {
+    srand((unsigned int)seed);
+}
+
+static inline ktl_int ktl_rand_int(ktl_int min_val, ktl_int max_val) {
+    if (min_val >= max_val) return min_val;
+    return min_val + (rand() % (max_val - min_val + 1));
+}
+
 // Katlin Standard Function Aliases
 #define str_len(s) ktl_str_len(s)
 #define str_eq(a, b) ktl_str_eq(a, b)
@@ -501,12 +941,36 @@ static inline void ktl_arena_destroy(ktl_arena* a) {
 #define path_base(p) ktl_path_base(p)
 #define path_dir(p) ktl_path_dir(p)
 
+#define str_trim(s) ktl_str_trim(s)
+#define str_to_lower(s) ktl_str_to_lower(s)
+#define str_to_upper(s) ktl_str_to_upper(s)
+#define str_replace(s, o, n) ktl_str_replace(s, o, n)
+#define str_repeat(s, c) ktl_str_repeat(s, c)
+#define str_split_at(s, d, i) ktl_str_split_at(s, d, i)
+#define str_count(s, n) ktl_str_count(s, n)
+
 #define file_read(p) ktl_file_read_str(p)
 #define file_write(p, c) ktl_file_write_str(p, c)
 #define file_append(p, c) ktl_file_append_str(p, c)
 #define file_exists(p) ktl_file_exists(p)
+#define file_size(p) ktl_file_size(p)
+#define file_remove(p) ktl_file_remove(p)
+#define file_is_dir(p) ktl_file_is_dir(p)
+#define dir_create(p) ktl_dir_create(p)
+#define dir_list(p) ktl_dir_list(p)
+
+#define cmd_output(c) ktl_cmd_output(c)
+
+#define net_tcp_listen(p) ktl_net_tcp_listen(p)
+#define net_tcp_accept(s) ktl_net_tcp_accept(s)
+#define net_tcp_read(c, m) ktl_net_tcp_read(c, m)
+#define net_tcp_write(c, d) ktl_net_tcp_write(c, d)
+#define net_tcp_connect(h, p) ktl_net_tcp_connect(h, p)
+#define net_close(f) ktl_net_close(f)
 
 #define TO_VEC_PTR(v) _Generic(&(v), ktl_vec**: *(ktl_vec**)&(v), default: (ktl_vec*)&(v))
+#define TO_VEC_STR_PTR(v) _Generic(&(v), ktl_vec_str**: *(ktl_vec_str**)&(v), default: (ktl_vec_str*)&(v))
+#define TO_MAP_PTR(m) _Generic(&(m), ktl_map**: *(ktl_map**)&(m), default: (ktl_map*)&(m))
 #define TO_SB_PTR(s) _Generic(&(s), ktl_sb**: *(ktl_sb**)&(s), default: (ktl_sb*)&(s))
 #define TO_ARENA_PTR(a) _Generic(&(a), ktl_arena**: *(ktl_arena**)&(a), default: (ktl_arena*)&(a))
 
@@ -517,16 +981,36 @@ static inline void ktl_arena_destroy(ktl_arena* a) {
 #define vec_len(v) ktl_vec_len(TO_VEC_PTR(v))
 #define vec_free(v) ktl_vec_free(TO_VEC_PTR(v))
 
+#define vec_str_create(c) ktl_vec_str_create(c)
+#define vec_str_push(v, s) ktl_vec_str_push(TO_VEC_STR_PTR(v), s)
+#define vec_str_get(v, i) ktl_vec_str_get(TO_VEC_STR_PTR(v), i)
+#define vec_str_len(v) ktl_vec_str_len(TO_VEC_STR_PTR(v))
+#define vec_str_join(v, d) ktl_vec_str_join(TO_VEC_STR_PTR(v), d)
+#define vec_str_free(v) ktl_vec_str_free(TO_VEC_STR_PTR(v))
+
+#define map_create(c) ktl_map_create(c)
+#define map_set(m, k, v) ktl_map_set(TO_MAP_PTR(m), k, v)
+#define map_get(m, k) ktl_map_get(TO_MAP_PTR(m), k)
+#define map_has(m, k) ktl_map_has(TO_MAP_PTR(m), k)
+#define map_len(m) ktl_map_len(TO_MAP_PTR(m))
+#define map_free(m) ktl_map_free(TO_MAP_PTR(m))
+
 #define sb_create(c) ktl_sb_create(c)
 #define sb_append(s, v) ktl_sb_append(TO_SB_PTR(s), v)
 #define sb_append_char(s, c) ktl_sb_append_char(TO_SB_PTR(s), c)
 #define sb_build(s) ktl_sb_build(TO_SB_PTR(s))
 #define sb_free(s) ktl_sb_free(TO_SB_PTR(s))
+#define sb_len(s) ktl_sb_len(TO_SB_PTR(s))
 
 #define arena_create(c) ktl_arena_create(c)
 #define arena_alloc(a, s) ktl_arena_alloc(TO_ARENA_PTR(a), s)
 #define arena_reset(a) ktl_arena_reset(TO_ARENA_PTR(a))
 #define arena_destroy(a) ktl_arena_destroy(TO_ARENA_PTR(a))
+
+#define sleep_ms(m) ktl_sleep_ms(m)
+#define time_unix() ktl_time_unix()
+#define rand_seed(s) ktl_rand_seed(s)
+#define rand_int(a, b) ktl_rand_int(a, b)
 
 #define time_now() ktl_time_now()
 #define get_ram_mb() ktl_get_ram_mb()

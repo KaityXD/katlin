@@ -25,11 +25,14 @@ readable and hackable. It is honest about what works:
 | Toolchain | `run`, `build`, `check`, `test`, `fmt`, `init`, cross-compilation — working |
 | Builds | Incremental; unchanged sources skip clang entirely |
 | `#strict` borrow checking | **Enforced** for aliased `&` borrows and borrows of immutable variables |
+| Multi-file imports | `import "file.ktl"` and `import mod;` with auto-bundling and cycle protection — working |
+| Dot-method calls | `s.len()` ⇄ `str_len(s)`, chaining, `.type()` — working, old names kept |
 | Inner functions | Fluent `.start()` chaining — **not implemented** |
 
 See [Feature support](#feature-support) for the full matrix, and
 [`examples/unsupported/`](examples/unsupported/README.md) for programs that
-need the missing features.
+need the missing features. Read the [Language Documentation & Guides](docs/README.md)
+for step-by-step tutorials and language guides.
 
 ---
 
@@ -39,6 +42,7 @@ need the missing features.
 git clone <this-repo> && cd katlin
 
 ./bin/katlin run examples/tour.ktl      # compile and run immediately
+./bin/katlin run examples/methods.ktl   # dot-method calls (s.len(), v.push(x))
 ./bin/katlin run examples/pointers.ktl  # raw pointers and raw { } blocks
 ./bin/katlin run examples/arguments.ktl # defaults, named args, guards
 ./bin/katlin run examples/fallbacks.ktl # `or` fallbacks
@@ -135,7 +139,8 @@ fn main {
 ```
 
 More in [`examples/tour.ktl`](examples/tour.ktl) and
-[`SYNTAX.md`](SYNTAX.md).
+[`examples/methods.ktl`](examples/methods.ktl), and the full
+[Language Documentation & Guides](docs/README.md).
 
 ---
 
@@ -161,6 +166,10 @@ Verified by `tests/run_tests.sh` against the shipped binary.
 - Address-of `&x` and dereference `*p`, including `*p = value`
 - Raw pointers: `*mut T`, `*const T`, pointer arithmetic, `raw { ... }` blocks
 - Default arguments and named arguments in any order
+- Dot-method calls: `s.len()`, `v.push(x)`, `m.get(k)`, `sb.append(s)`, chaining
+  (`s.trim().upper()`), string-literal receivers (`"hi".len()`); old
+  `str_len` / `vec_push` names keep working
+- Inferred `.type` and `.type()` compile-time type strings
 - Postfix guard clauses: `return if cond;`
 - `or` fallbacks: `x := f() or 8080`, `or return`, `or panic("...")`
 - `#strict` borrow checking: rejects aliased mutable borrows and borrows of
@@ -171,6 +180,8 @@ Verified by `tests/run_tests.sh` against the shipped binary.
 - Runtime: arena allocator, dynamic vector, string builder, string helpers,
   file I/O, CLI args, `min`/`max`/`abs`/`hash`, timing and RSS measurement
 - Toolchain flags: `--debug`, `--release`, `--target=<triple>`, `--sysroot=<dir>`
+- Multi-file projects with `import "file.ktl"` and `import module;` — automatic
+  dependency bundling, diamond de-duplication, and cycle protection
 
 ### Not implemented
 
@@ -181,7 +192,6 @@ Verified by `tests/run_tests.sh` against the shipped binary.
 | `strict fn` (per-function strict mode) | Not recognised |
 | `or` nested inside a call argument | C backend error |
 | Implicit return of a function's last expression | C backend error |
-| `import` / multi-file projects | Silently ignored |
 
 Inner functions are the significant gap: capturing a closure's environment
 needs to know the shape of the enclosing scope, which the character-level
@@ -329,8 +339,8 @@ Reproduce with:
 ## Testing
 
 ```bash
-./tests/run_tests.sh                    # 80 end-to-end tests, shipped binary
-python3 -m unittest discover tests/     # 14 unit tests, Python bootstrap
+./tests/run_tests.sh                    # 96 end-to-end tests, shipped binary
+python3 -m unittest discover tests/     # 17 unit tests, Python bootstrap
 ```
 
 `tests/run_tests.sh` is the one that matters for releases: it covers CLI exit
@@ -355,8 +365,7 @@ build.sh                Bootstrap script (./build.sh --verify)
 editors/vscode/         Language server, VS Code client, TextMate grammar, snippets
 editors/zed/            Zed extension: tree-sitter wiring and queries
 grammars/tree-sitter-katlin/   Tree-sitter grammar for Katlin
-SYNTAX.md               Language reference
-ARCHITECTURE.md         Design notes
+docs/                   Full language documentation and guides
 ```
 
 ---
@@ -369,7 +378,7 @@ ARCHITECTURE.md         Design notes
    of an expression, which a scanner cannot determine.
 2. Deepen `#strict` further: lifetime and move tracking, and seeing borrows
    through the implicit addresses the argument rewriter inserts.
-3. `import` and multi-file projects. Currently `import` is silently skipped.
+3. `import std.*` subsystems are accepted but ignored (no real std modules yet); add a module registry or package manager.
 4. Emit `#line` directives from the transpiler. Backend errors currently
    report positions in the generated C, so an editor can say *what* is wrong
    but not *where*; `#line` would fix that for every consumer at once.

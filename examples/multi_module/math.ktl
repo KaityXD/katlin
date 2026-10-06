@@ -1,0 +1,13 @@
+struct Vec2 {
+    int x;
+    int y;
+}
+
+fn vec_add(Vec2 a, Vec2 b) -> Vec2 {
+    mut res := Vec2{ x = a.x + b.x, y = a.y + b.y };
+    return res;
+}
+
+fn vec_dot(Vec2 a, Vec2 b) -> int {
+    return a.x * b.x + a.y * b.y;
+}

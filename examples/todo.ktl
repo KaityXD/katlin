@@ -1,0 +1,141 @@
+#strict
+// examples/todo.ktl
+// Tiny CLI todo manager. Exercises file I/O, args, strings - no missing features.
+// Usage:
+//   katlin run examples/todo.ktl -- list
+//   katlin run examples/todo.ktl -- add "buy milk"
+//   katlin run examples/todo.ktl -- done 1
+//   katlin run examples/todo.ktl -- clear
+
+fn db_path() -> str {
+    return "todo.txt";
+}
+
+fn count_lines(str content) -> int {
+    if content.len() == 0 {
+        return 0;
+    }
+    mut int n = 1;
+    mut int i = 0;
+    while i < content.len() {
+        if content.char_at(i) == 10 {
+            n += 1;
+        }
+        i += 1;
+    }
+    // trailing newline means last split token is empty - don't count it
+    if content.char_at(content.len() - 1) == 10 {
+        n -= 1;
+    }
+    return n;
+}
+
+fn cmd_list(str content, float ram0) {
+    int total = count_lines(content);
+    if total == 0 {
+        println("todo: empty (0 tasks)");
+    } else {
+        for i in 0..total {
+            str line = content.split_at("\n", i);
+            println("%: %", i + 1, line);
+        }
+        println("total: % task(s)", total);
+    }
+    println("ram: start=% MB now=% MB", ram0, get_ram_mb());
+}
+
+fn cmd_add(str content, float ram0) {
+    if args_count() < 3 {
+        println("usage: todo add <task text>");
+        return;
+    }
+    mut sb := sb_create(128);
+    mut int i = 2;
+    while i < args_count() {
+        if i > 2 {
+            sb.append(" ");
+        }
+        sb.append(args_get(i));
+        i += 1;
+    }
+    str task = str_trim(sb.build());
+    sb.free();
+    if task.len() == 0 {
+        println("usage: todo add <task text>");
+        return;
+    }
+    mut sb2 := sb_create(content.len() + task.len() + 8);
+    if content.len() > 0 {
+        sb2.append(content);
+        if content.char_at(content.len() - 1) != 10 {
+            sb2.append("\n");
+        }
+    }
+    sb2.append(task);
+    sb2.append("\n");
+    str next = sb2.build();
+    if file_write(db_path(), next) {
+        println("added: %", task);
+    } else {
+        println("error: cannot write %", db_path());
+    }
+    sb2.free();
+    println("ram: start=% MB now=% MB", ram0, get_ram_mb());
+}
+
+fn cmd_done(str content, float ram0) {
+    if args_count() < 3 {
+        println("usage: todo done <number>");
+        return;
+    }
+    int n = args_get(2).to_int();
+    int total = count_lines(content);
+    if n < 1 || n > total {
+        println("error: number 1..% expected, got %", total, n);
+        return;
+    }
+    mut sb := sb_create(content.len() + 16);
+    mut int i = 0;
+    while i < total {
+        if i + 1 != n {
+            sb.append(content.split_at("\n", i));
+            sb.append("\n");
+        } else {
+            println("done: %", content.split_at("\n", i));
+        }
+        i += 1;
+    }
+    str next = sb.build();
+    if total == 1 {
+        file_write(db_path(), "");
+    } else {
+        file_write(db_path(), next);
+    }
+    sb.free();
+    println("ram: start=% MB now=% MB", ram0, get_ram_mb());
+}
+
+fn main {
+    float ram0 = get_ram_mb();
+    mut str content = "";
+    if file_exists(db_path()) {
+        content = file_read(db_path());
+    }
+    mut str cmd = "list";
+    if args_count() > 1 {
+        cmd = args_get(1);
+    }
+    if str_eq(cmd, "list") {
+        cmd_list(content, ram0);
+    } else if str_eq(cmd, "add") {
+        cmd_add(content, ram0);
+    } else if str_eq(cmd, "done") {
+        cmd_done(content, ram0);
+    } else if str_eq(cmd, "clear") {
+        file_write(db_path(), "");
+        println("cleared");
+        println("ram: start=% MB now=% MB", ram0, get_ram_mb());
+    } else {
+        println("usage: todo [list|add <text>|done <n>|clear]");
+    }
+}

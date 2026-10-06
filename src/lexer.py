@@ -75,6 +75,11 @@ class TokenType:
     GTE = ">="
     AND = "&&"
     OR = "||"
+    PIPE = "|"
+    CARET = "^"
+    TILDE = "~"
+    SHL = "<<"
+    SHR = ">>"
     
     DOT = "."
     DOTDOT = ".."       # Range
@@ -329,15 +334,23 @@ class Lexer:
                 else:
                     tokens.append(Token(TokenType.BANG, "!", start_line, start_col))
             elif ch == "<":
-                if self.match("="):
+                if self.match("<"):
+                    tokens.append(Token(TokenType.SHL, "<<", start_line, start_col))
+                elif self.match("="):
                     tokens.append(Token(TokenType.LTE, "<=", start_line, start_col))
                 else:
                     tokens.append(Token(TokenType.LT, "<", start_line, start_col))
             elif ch == ">":
-                if self.match("="):
+                if self.match(">"):
+                    tokens.append(Token(TokenType.SHR, ">>", start_line, start_col))
+                elif self.match("="):
                     tokens.append(Token(TokenType.GTE, ">=", start_line, start_col))
                 else:
                     tokens.append(Token(TokenType.GT, ">", start_line, start_col))
+            elif ch == "^":
+                tokens.append(Token(TokenType.CARET, "^", start_line, start_col))
+            elif ch == "~":
+                tokens.append(Token(TokenType.TILDE, "~", start_line, start_col))
             elif ch == "&":
                 if self.match("&"):
                     tokens.append(Token(TokenType.AND, "&&", start_line, start_col))
@@ -347,7 +360,7 @@ class Lexer:
                 if self.match("|"):
                     tokens.append(Token(TokenType.OR, "||", start_line, start_col))
                 else:
-                    tokens.append(Token(TokenType.IDENT, "|", start_line, start_col))
+                    tokens.append(Token(TokenType.PIPE, "|", start_line, start_col))
             elif ch == ".":
                 if self.match("."):
                     tokens.append(Token(TokenType.DOTDOT, "..", start_line, start_col))

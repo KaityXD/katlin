@@ -1,0 +1,27 @@
+// Dot-method sugar: `s.len()` instead of `str_len(s)` etc.
+// Old underscore names keep working; both styles compile to the same C.
+fn main {
+    s := "  hello katlin  ";
+    println("len: % %", s.len(), str_len(s));
+    println("trim+upper: %", s.trim().upper());
+    println("contains: %", s.contains("katlin"));
+    println("type: % %", s.type, s.type());
+
+    v := vec_create(4);
+    v.push(10);
+    vec_push(v, 20);
+    println("vec: len=% get=%", v.len(), v.get(1));
+
+    m := map_create(8);
+    m.set("k", "v");
+    println("map: % len=%", m.get("k"), m.len());
+
+    mut sb := sb_create(64);
+    sb.append("hi ");
+    sb.append("there");
+    println("sb: % len=%", sb.build(), sb.len());
+
+    v.free();
+    m.free();
+    sb.free();
+}

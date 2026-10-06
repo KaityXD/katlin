@@ -1,0 +1,5 @@
+import "math.ktl";
+
+fn print_vec(str label, Vec2 v) {
+    println("%: (%, %)", label, v.x, v.y);
+}

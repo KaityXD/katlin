@@ -54,7 +54,10 @@ module.exports = grammar({
 
         import_statement: $ => seq(
             'import',
-            repeat1(choice($.identifier, '.', ',', '{', '}')),
+            choice(
+                $.string,
+                repeat1(choice($.identifier, '.', ',', '{', '}'))
+            ),
             ';'
         ),
 
@@ -245,8 +248,8 @@ module.exports = grammar({
             seq('return', field('value', $._expression), ';')
         ),
 
-        break_statement: $ => seq('break', ';'),
-        continue_statement: $ => seq('continue', ';'),
+        break_statement: $ => seq('break', optional(seq('if', field('guard', $._expression))), ';'),
+        continue_statement: $ => seq('continue', optional(seq('if', field('guard', $._expression))), ';'),
 
         raw_block: $ => seq('raw', $.block),
 
@@ -288,6 +291,8 @@ module.exports = grammar({
                 ['>', 8],
                 ['<=', 8],
                 ['>=', 8],
+                ['<<', 9],
+                ['>>', 9],
                 ['+', 10],
                 ['-', 10],
                 ['*', 11],
