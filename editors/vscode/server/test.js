@@ -290,6 +290,26 @@ async function testEndToEnd() {
     diags = await client.nextDiagnostics();
     eq('closing a document clears its diagnostics', 0, diags.diagnostics.length);
 
+    // An unimplemented request must report MethodNotFound, not a null result.
+    // Zed in particular probes methods a server may not implement, and a null
+    // result looks like a successful empty answer.
+    const unknown = await client.request('textDocument/semanticTokens/full', {
+        textDocument: { uri: uriA }
+    });
+    truthy('unknown request returns an error', !!unknown.error, JSON.stringify(unknown));
+    eq('unknown request uses MethodNotFound', -32601, unknown.error && unknown.error.code);
+
+    // Notifications for unknown methods must be ignored, not crash the server.
+    client.notify('$/setTrace', { value: 'off' });
+    client.notify('workspace/didChangeConfiguration', { settings: {} });
+    diags = await (async () => {
+        client.notify('textDocument/didOpen', {
+            textDocument: { uri: uriA, languageId: 'katlin', version: 2, text: CLEAN_SOURCE }
+        });
+        return client.nextDiagnostics();
+    })();
+    eq('server survives unknown notifications', 0, diags.diagnostics.length);
+
     // Shutdown/exit.
     await client.request('shutdown', null);
     client.notify('exit', null);

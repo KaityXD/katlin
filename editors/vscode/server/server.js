@@ -262,12 +262,27 @@ function createConnection(input, output) {
 
             if (message.id !== undefined && message.method) {
                 const handler = handlers.get(message.method);
-                const result = handler ? handler(message.params || {}) : null;
-                send({
-                    jsonrpc: '2.0',
-                    id: message.id,
-                    result: result === undefined ? null : result
-                });
+                if (!handler) {
+                    // LSP requires MethodNotFound. Returning `null` would look
+                    // like a successful empty result, and a client asking for a
+                    // specific shape (workspace/configuration, say) would then
+                    // misbehave instead of simply proceeding without it.
+                    send({
+                        jsonrpc: '2.0',
+                        id: message.id,
+                        error: {
+                            code: -32601,
+                            message: 'method not found: ' + message.method
+                        }
+                    });
+                } else {
+                    const result = handler(message.params || {});
+                    send({
+                        jsonrpc: '2.0',
+                        id: message.id,
+                        result: result === undefined ? null : result
+                    });
+                }
             } else if (message.method) {
                 onNotification(message.method, message.params || {});
             }
