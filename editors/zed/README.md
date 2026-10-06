@@ -49,11 +49,29 @@ editors/zed/setup.sh
 
 Then open any `.ktl` file.
 
-Building the Rust extension to WebAssembly needs the wasm target:
+### If you cannot install the wasm target
+
+The Rust half of the extension launches the language server, and building it
+needs `wasm32-wasip2`. Without that target Zed cannot build the extension at
+all -- not even the grammar. Two ways out:
 
 ```bash
+# On Arch and derivatives, this provides the target for the distro's rust:
+sudo pacman -S rust-wasm
+# Otherwise:
 rustup target add wasm32-wasip2
 ```
+
+Or skip the Rust entirely:
+
+```bash
+editors/zed/setup.sh --grammar-only
+```
+
+That writes an `extension.toml` with no `[lib]` and no `[language_servers]`,
+so Zed installs it as a pure grammar. You get highlighting, brackets,
+indentation and the outline panel; you do not get diagnostics. Re-run
+`setup.sh` without the flag once the wasm target is available.
 
 ## Configuration
 
