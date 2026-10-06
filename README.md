@@ -240,6 +240,29 @@ Three details worth knowing:
   `_Generic` dispatch in C rather than a guessed `printf` format specifier, so
   a mismatch cannot silently print garbage.
 
+### Bootstrapping, and why there are two compilers
+
+`bin/katlin` is written in Katlin, so building it needs a compiler that
+already exists. That role is filled by the Python bootstrap compiler in
+`src/`, driven by `bin/katlin_py`. `./build.sh` runs that stage, then
+optionally checks the result can rebuild itself.
+
+The two implementations are not identical, and they are not meant to be:
+
+- `src/` has a real lexer, parser and AST. It implements inner functions,
+  implicit last-expression returns and reference struct fields, and it is the
+  only way to build some of the programs in `examples/unsupported/`.
+- `compiler/main.ktl` is the shipping compiler. Self-hosted, no Python
+  dependency, faster — but its front end is a character scanner, which is
+  exactly why those features are missing from it.
+
+Because they can disagree, `./build.sh --verify` is the load-bearing check:
+it builds the shipping compiler *with the bootstrap* and then rebuilds it
+*with itself*. A change that satisfies only one of them fails there. CI runs
+it before any test suite. This is not theoretical — it caught a divergence
+where the two emitted different `const` qualifiers for `:=`, which let code
+self-host successfully while failing to bootstrap at all.
+
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the longer design notes.
 
 ---
