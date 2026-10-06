@@ -137,6 +137,68 @@ out="$("$KATLIN" run "$WORK/bitand.ktl" 2>&1 | strip)"; code=$?
 check_eq "bitwise-and is not treated as a borrow" "0" "$code"
 check_contains "bitwise-and program computes correctly" "sum=50" "$out"
 
+# Borrowing two distinct fields of one struct is not aliasing...
+cat > "$WORK/fields.ktl" <<'KTL'
+#strict
+struct P { int x; int y; }
+fn bump(int &a, int &b) { a = a + 1; b = b + 1; }
+fn main {
+    mut p = P{ x = 1, y = 2 };
+    bump(&p.x, &p.y);
+    println("x=% y=%", p.x, p.y);
+}
+KTL
+out="$("$KATLIN" run "$WORK/fields.ktl" 2>&1 | strip)"; code=$?
+check_eq "distinct struct fields are not an alias" "0" "$code"
+check_contains "distinct field borrows both apply" "x=2 y=3" "$out"
+
+# ...but the same field twice is.
+cat > "$WORK/fieldalias.ktl" <<'KTL'
+#strict
+struct P { int x; int y; }
+fn bump(int &a, int &b) { a = a + 1; b = b + 1; }
+fn main {
+    mut p = P{ x = 1, y = 2 };
+    bump(&p.x, &p.x);
+}
+KTL
+out="$("$KATLIN" build "$WORK/fieldalias.ktl" -o "$WORK/fa" 2>&1 | strip)"; code=$?
+check_eq "same field twice is rejected" "1" "$code"
+check_contains "field alias names the field" "cannot borrow \`p.x\`" "$out"
+
+# `mut` in one function must not make a name mutable in another.
+cat > "$WORK/scope.ktl" <<'KTL'
+#strict
+fn bump(int &v) { println("%", v); }
+fn a {
+    mut int shared = 1;
+    shared = shared + 1;
+    println("%", shared);
+}
+fn b {
+    shared := 5;
+    bump(&shared);
+}
+fn main { a(); b(); }
+KTL
+out="$("$KATLIN" build "$WORK/scope.ktl" -o "$WORK/sc" 2>&1 | strip)"; code=$?
+check_eq "mutability does not leak between functions" "1" "$code"
+check_contains "leaked mutability is reported" "is not declared" "$out"
+
+# File-level `mut` is visible inside functions.
+cat > "$WORK/glob.ktl" <<'KTL'
+#strict
+mut int total = 0;
+fn add(int &v) { v = v + 1; }
+fn main {
+    add(total);
+    println("total=%", total);
+}
+KTL
+out="$("$KATLIN" run "$WORK/glob.ktl" 2>&1 | strip)"; code=$?
+check_eq "file-level mut is visible in functions" "0" "$code"
+check_contains "file-level mut is writable" "total=1" "$out"
+
 # Sequential borrows of the same variable in separate calls are fine.
 cat > "$WORK/seq.ktl" <<'KTL'
 #strict

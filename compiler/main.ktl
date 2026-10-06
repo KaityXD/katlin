@@ -1413,6 +1413,11 @@ fn check_borrows(str src, str path) -> int {
 
     // Names declared `mut`, as "|x|y|".
     mut str mutables = "|";
+    // File-level `mut` declarations, visible to every function. Function
+    // scopes start from these rather than carrying names over from whichever
+    // function happened to be scanned previously.
+    mut str globals = "|";
+    mut brace_depth := 0;
     // Borrows seen so far in the call invocation being scanned.
     mut str borrows = "|";
 
@@ -1468,7 +1473,15 @@ fn check_borrows(str src, str path) -> int {
         if ch == 123 { // '{'
             pending_fn = false;
             fn_name_read = false;
+            brace_depth += 1;
             prev = 123;
+            i += 1;
+            continue;
+        }
+
+        if ch == 125 { // '}'
+            if brace_depth > 0 { brace_depth -= 1; }
+            prev = 125;
             i += 1;
             continue;
         }
@@ -1510,23 +1523,38 @@ fn check_borrows(str src, str path) -> int {
             ns := j;
             while j < n && is_alnum(str_char_at(src, j)) { j += 1; }
             if j > ns && !is_digit(str_char_at(src, ns)) {
-                bname := str_sub(src, ns, j - ns);
-                key := str_concat("|", str_concat(bname, "|"));
+                base_name := str_sub(src, ns, j - ns);
+                // A field access borrows only that field, so `f(&p.x, &p.y)`
+                // is not aliasing while `f(&p.x, &p.x)` is. The borrow key
+                // carries the field; the mutability check uses the base name.
+                mut key_name := base_name;
+                mut k := j;
+                while k < n && is_space(str_char_at(src, k)) { k += 1; }
+                if k < n && str_char_at(src, k) == 46 { // '.'
+                    mut fe := k + 1;
+                    while fe < n && is_alnum(str_char_at(src, fe)) { fe += 1; }
+                    if fe > k + 1 {
+                        key_name = str_concat(base_name, str_sub(src, k, fe - k));
+                        j = fe;
+                    }
+                }
+                key := str_concat("|", str_concat(key_name, "|"));
+                base_key := str_concat("|", str_concat(base_name, "|"));
                 if in_params {
                     // A `&` parameter is itself a mutable reference.
-                    mutables = str_concat(mutables, key);
+                    mutables = str_concat(mutables, base_key);
                 } else {
                     if str_contains(borrows, key) {
-                        println("\x1b[1;31merror\x1b[0m: cannot borrow `%` as mutable more than once at a time", bname);
+                        println("\x1b[1;31merror\x1b[0m: cannot borrow `%` as mutable more than once at a time", key_name);
                         println("  --> %:%", path, line);
                         println("   = note: #strict forbids aliased mutable references (&)");
                         errors += 1;
                     }
                     borrows = str_concat(borrows, key);
-                    if !str_contains(mutables, key) {
-                        println("\x1b[1;31merror\x1b[0m: cannot borrow `%` as mutable because it is not declared `mut`", bname);
+                    if !str_contains(mutables, base_key) {
+                        println("\x1b[1;31merror\x1b[0m: cannot borrow `%` as mutable because it is not declared `mut`", base_name);
                         println("  --> %:%", path, line);
-                        println("   = help: declare it as `mut int % = ...;` or `mut % := ...;`", bname, bname);
+                        println("   = help: declare it as `mut int % = ...;` or `mut % := ...;`", base_name, base_name);
                         errors += 1;
                     }
                 }
@@ -1549,6 +1577,10 @@ fn check_borrows(str src, str path) -> int {
             if str_eq(w, "fn") {
                 pending_fn = true;
                 fn_name_read = false;
+                // Each function gets a fresh mutability scope, so a name
+                // declared `mut` in one function is not treated as mutable in
+                // another. File-level declarations remain visible.
+                mutables = globals;
                 prev = 0;
                 continue;
             }
@@ -1569,7 +1601,11 @@ fn check_borrows(str src, str path) -> int {
                     if k2 > w2s && is_type_keyword(w1) {
                         dname = str_sub(src, w2s, k2 - w2s);
                     }
-                    mutables = str_concat(mutables, str_concat("|", str_concat(dname, "|")));
+                    decl_key := str_concat("|", str_concat(dname, "|"));
+                    if brace_depth == 0 {
+                        globals = str_concat(globals, decl_key);
+                    }
+                    mutables = str_concat(mutables, decl_key);
                 }
                 prev = 0;
                 continue;

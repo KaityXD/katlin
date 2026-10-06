@@ -169,10 +169,15 @@ front end cannot determine. That is the main item in the roadmap below.
 A file-level `#strict` pragma turns on compile-time aliasing checks. Two rules
 are enforced, before any code is generated:
 
-1. **No aliased mutable borrows.** Within one call, the same variable may not
-   be borrowed with `&` twice.
+1. **No aliased mutable borrows.** Within one call, the same place may not be
+   borrowed with `&` twice. Borrows are tracked per field, so
+   `f(&p.x, &p.y)` is fine while `f(&p.x, &p.x)` is an error.
 2. **No borrowing immutables.** A variable declared without `mut` cannot be
    passed as `&x`.
+
+Mutability is scoped per function. A name declared `mut` inside one function
+does not make the same name mutable in another, while a file-level `mut`
+declaration stays visible everywhere.
 
 ```katlin
 #strict
@@ -199,11 +204,12 @@ Runnable examples: [`examples/strict_borrows.ktl`](examples/strict_borrows.ktl)
 [`examples/borrow_immutable.ktl`](examples/borrow_immutable.ktl) (rejected).
 
 **Scope, stated plainly.** This is a source-level pass, not a full borrow
-checker. It does not track lifetimes, moves, scopes, or struct fields, and it
-uses one flat namespace for mutability. `&` is only treated as a borrow in an
-argument or parameter position, so bitwise-and (`count & 1`) is never
-misread. Treat it as a guard against the common aliasing mistake, not as
-Rust-grade safety.
+checker. It does not track lifetimes or moves, and it has no notion of
+ownership. `&` is only treated as a borrow in an argument or parameter
+position, so bitwise-and (`count & 1`) is never misread — but that also means
+a call written without an explicit `&` on a reference argument is invisible
+to it, since addresses are supplied later, by the argument rewriter. Treat it
+as a guard against the common aliasing mistake, not as Rust-grade safety.
 
 The Python bootstrap compiler in `src/` implements several of these
 (default/named arguments, inner functions, a narrow aliased-`&` check, `or`
@@ -298,7 +304,7 @@ Reproduce with:
 ## Testing
 
 ```bash
-./tests/run_tests.sh                    # 72 end-to-end tests, shipped binary
+./tests/run_tests.sh                    # 80 end-to-end tests, shipped binary
 python3 -m unittest discover tests/     # 14 unit tests, Python bootstrap
 ```
 
@@ -334,8 +340,8 @@ ARCHITECTURE.md         Design notes
    `compiler/main.ktl`. Inner functions with scope capture and implicit
    last-expression returns are blocked on this — they need to know the shape
    of an expression, which a scanner cannot determine.
-2. Deepen `#strict`: lifetime and move tracking, scope-aware mutability, and
-   struct field borrows. Today it covers aliased `&` borrows only.
+2. Deepen `#strict` further: lifetime and move tracking, and seeing borrows
+   through the implicit addresses the argument rewriter inserts.
 3. `import` and multi-file projects. Currently `import` is silently skipped.
 4. An LSP so editors get the diagnostics the compiler already produces.
 5. Cross-compilation is wired up (`--target`, `--sysroot`) but untested
