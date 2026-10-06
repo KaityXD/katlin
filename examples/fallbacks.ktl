@@ -1,0 +1,43 @@
+// examples/fallbacks.ktl
+// `or` fallback expressions: a value default, an early return, or a panic.
+//
+// Run it:  katlin run examples/fallbacks.ktl
+
+// Returns 0 to signal "not found", which callers treat as a miss.
+fn lookup(int id) -> int {
+    return if id < 0;
+    return id * 100;
+}
+
+fn parse_count(str s) -> int {
+    return if str_len(s) == 0;
+    return str_len(s) * 2;
+}
+
+// `or return` bails out of the function when the left side is falsy.
+fn report(int id) {
+    value := lookup(id) or return;
+    println("found id % -> %", id, value);
+}
+
+fn main {
+    println("=== or fallbacks ===");
+
+    // Value fallback: used when the left side evaluates to 0.
+    port := parse_count("") or 8080;
+    println("port            = %", port);
+
+    counted := parse_count("ab") or 8080;
+    println("parse_count(ab) = %", counted);
+
+    // Same expression, left side truthy -> left side wins.
+    found := lookup(3) or -1;
+    println("lookup(3)       = %", found);
+    miss := lookup(-1) or -1;
+    println("lookup(-1)      = %", miss);
+
+    // Early return.
+    report(2);
+    report(-5);          // prints nothing: the guard returns first
+    println("=== done ===");
+}

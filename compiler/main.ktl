@@ -1842,6 +1842,213 @@ fn rewrite_call_args(str src) -> str {
 }
 
 // -------------------------------------------------------------
+// `or` fallback expressions
+// -------------------------------------------------------------
+//
+// `expr or fallback` has no C equivalent, but clang supports GNU statement
+// expressions, which give exactly the right evaluation semantics (the left
+// side is evaluated once). Statements are buffered so the left-hand side can
+// be wrapped after the fact:
+//
+//   port := parse_int(s) or 8080;
+//   ->  port := ({ __auto_type _ktl_opt = parse_int(s);
+//                  _ktl_opt ? _ktl_opt : (8080); });
+//
+// Only statements are rewritten, so an `or` nested inside a call argument is
+// left alone rather than guessed at.
+
+fn rewrite_one_or(str stmt) -> str {
+    n := str_len(stmt);
+    mut depth := 0;
+    mut or_pos := -1;
+    mut i := 0;
+    while i < n {
+        c := str_char_at(stmt, i);
+        if c == 34 { // string
+            i += 1;
+            while i < n {
+                sc := str_char_at(stmt, i);
+                if sc == 92 { i += 2; continue; }
+                if sc == 34 { i += 1; break; }
+                i += 1;
+            }
+            continue;
+        }
+        if c == 47 && i + 1 < n && str_char_at(stmt, i + 1) == 47 { // line comment
+            while i < n && str_char_at(stmt, i) != 10 { i += 1; }
+            continue;
+        }
+        if c == 40 || c == 91 { depth += 1; }
+        else if c == 41 || c == 93 { depth -= 1; }
+        else if c == 32 && depth == 0 && i + 4 <= n {
+            if str_eq(str_sub(stmt, i, 4), " or ") {
+                or_pos = i;
+                break;
+            }
+        }
+        i += 1;
+    }
+    if or_pos < 0 {
+        return "";
+    }
+
+    left := str_sub(stmt, 0, or_pos);
+    right := trim_string(str_sub(stmt, or_pos + 4, n - or_pos - 4));
+    if str_len(right) == 0 {
+        return "";
+    }
+
+    // Where does the expression being guarded start?
+    ln := str_len(left);
+    mut prefix_end := 0;
+    mut d2 := 0;
+    mut j := 0;
+    while j < ln {
+        c := str_char_at(left, j);
+        if c == 34 {
+            j += 1;
+            while j < ln {
+                sc := str_char_at(left, j);
+                if sc == 92 { j += 2; continue; }
+                if sc == 34 { j += 1; break; }
+                j += 1;
+            }
+            continue;
+        }
+        if c == 40 || c == 91 { d2 += 1; }
+        else if c == 41 || c == 93 { d2 -= 1; }
+        else if d2 == 0 && c == 58 && j + 1 < ln && str_char_at(left, j + 1) == 61 { // ':='
+            prefix_end = j + 2;
+            j += 1;
+        } else if d2 == 0 && c == 61 { // '='
+            prev := 0;
+            if j > 0 { prev = str_char_at(left, j - 1); }
+            next := 0;
+            if j + 1 < ln { next = str_char_at(left, j + 1); }
+            if next != 61 && prev != 60 && prev != 62 && prev != 33 && prev != 58 {
+                prefix_end = j + 1;
+            }
+        }
+        j += 1;
+    }
+    if prefix_end == 0 {
+        // `return expr or fallback`
+        mut k := 0;
+        while k < ln && is_space(str_char_at(left, k)) { k += 1; }
+        if k + 6 <= ln && str_eq(str_sub(left, k, 6), "return") {
+            mut r := k + 6;
+            while r < ln && is_space(str_char_at(left, r)) { r += 1; }
+            prefix_end = r;
+        }
+    }
+    if prefix_end == 0 {
+        return ""; // cannot tell where the guarded expression begins
+    }
+
+    prefix := str_sub(left, 0, prefix_end);
+    lhs := trim_string(str_sub(left, prefix_end, ln - prefix_end));
+    if str_len(lhs) == 0 {
+        return "";
+    }
+
+    res := sb_create(str_len(stmt) + 96);
+    sb_append(res, prefix);
+    if str_eq(right, "return") {
+        // The braces matter: the transpiler's `if` handler looks for a `{` to
+        // find where the condition ends, so an unbraced `if` here would
+        // swallow the rest of the file.
+        sb_append(res, "({ __auto_type _ktl_opt = ");
+        sb_append(res, lhs);
+        sb_append(res, "; if (!_ktl_opt) { return; } _ktl_opt; })");
+    } else if str_starts_with(right, "panic(") || str_starts_with(right, "assert(") {
+        // A comma expression keeps `if` out of the generated code entirely.
+        sb_append(res, "({ __auto_type _ktl_opt = ");
+        sb_append(res, lhs);
+        sb_append(res, "; _ktl_opt ? _ktl_opt : (");
+        sb_append(res, right);
+        sb_append(res, ", 0); })");
+    } else {
+        sb_append(res, "({ __auto_type _ktl_opt = ");
+        sb_append(res, lhs);
+        sb_append(res, "; _ktl_opt ? _ktl_opt : (");
+        sb_append(res, right);
+        sb_append(res, "); })");
+    }
+    return sb_build(res);
+}
+
+fn rewrite_or_fallbacks(str src) -> str {
+    if !str_contains(src, " or ") {
+        return src;
+    }
+    out := sb_create(str_len(src) + 128);
+    stmt := sb_create(512);
+    n := str_len(src);
+    mut i := 0;
+    mut depth := 0;
+
+    while i < n {
+        c := str_char_at(src, i);
+
+        if c == 34 { // string: copy straight through
+            sb_append_char(stmt, c);
+            i += 1;
+            while i < n {
+                sc := str_char_at(src, i);
+                sb_append_char(stmt, sc);
+                i += 1;
+                if sc == 92 && i < n {
+                    sb_append_char(stmt, str_char_at(src, i));
+                    i += 1;
+                    continue;
+                }
+                if sc == 34 { break; }
+            }
+            continue;
+        }
+
+        if c == 123 || c == 125 { // '{' or '}'
+            flush := rewrite_one_or(sb_build(stmt));
+            if str_len(flush) > 0 {
+                sb_append(out, flush);
+            } else {
+                sb_append(out, sb_build(stmt));
+            }
+            stmt = sb_create(512);
+            sb_append_char(out, c);
+            i += 1;
+            continue;
+        }
+
+        if c == 59 && depth == 0 { // ';'
+            flush := rewrite_one_or(sb_build(stmt));
+            if str_len(flush) > 0 {
+                sb_append(out, flush);
+            } else {
+                sb_append(out, sb_build(stmt));
+            }
+            stmt = sb_create(512);
+            sb_append_char(out, 59);
+            i += 1;
+            continue;
+        }
+
+        if c == 40 || c == 91 { depth += 1; }
+        else if c == 41 || c == 93 { depth -= 1; }
+        sb_append_char(stmt, c);
+        i += 1;
+    }
+
+    tail := rewrite_one_or(sb_build(stmt));
+    if str_len(tail) > 0 {
+        sb_append(out, tail);
+    } else {
+        sb_append(out, sb_build(stmt));
+    }
+    return sb_build(out);
+}
+
+// -------------------------------------------------------------
 // Compilation Pipeline Execution
 // -------------------------------------------------------------
 
@@ -1940,7 +2147,7 @@ fn compile_file(str src_path, str out_binary, bool optimize, bool run_after, str
     }
 
     // Rewrite named arguments / fill parameter defaults before transpiling.
-    src_rewritten := rewrite_call_args(src_content);
+    src_rewritten := rewrite_call_args(rewrite_or_fallbacks(src_content));
 
     raw_c := transpile_source(src_rewritten, false);
 
@@ -2174,7 +2381,7 @@ fn run_test_file(str path) -> int {
         return -1;
     }
 
-    c_code := transpile_source(rewrite_call_args(src), true);
+    c_code := transpile_source(rewrite_call_args(rewrite_or_fallbacks(src)), true);
     if !str_contains(c_code, "ktl_test_0") {
         return -1;
     }

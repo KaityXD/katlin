@@ -229,6 +229,35 @@ check_eq "guard fires only when true" "1" "$(printf '%s' "$out" | grep -c '^unde
 
 # --------------------------------------------------------------------------
 echo
+echo "or fallbacks"
+# --------------------------------------------------------------------------
+cat > "$WORK/orfb.ktl" <<'KTL'
+fn lookup(int id) -> int {
+    return if id < 0;
+    return id * 100;
+}
+fn report(int id) {
+    v := lookup(id) or return;
+    println("hit %", v);
+}
+fn main {
+    a := lookup(3) or -1;
+    println("a=%", a);
+    b := lookup(-1) or -1;
+    println("b=%", b);
+    report(2);
+    report(-5);
+}
+KTL
+out="$("$KATLIN" run "$WORK/orfb.ktl" 2>&1 | strip)"; code=$?
+check_eq "or fallback program runs" "0" "$code"
+check_contains "or uses the left side when truthy" "a=300" "$out"
+check_contains "or uses the default when falsy"    "b=-1"  "$out"
+check_contains "or return bails out early"         "hit 200" "$out"
+check_eq "or return prints nothing when falsy" "1" "$(printf '%s' "$out" | grep -c '^hit ')"
+
+# --------------------------------------------------------------------------
+echo
 echo "toolchain"
 # --------------------------------------------------------------------------
 # check: type-checks without producing a binary
