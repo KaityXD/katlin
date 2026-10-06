@@ -1,0 +1,15 @@
+{
+  "name": "tree-sitter-katlin",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Katlin programming language",
+  "license": "MIT",
+  "keywords": ["tree-sitter", "parser", "katlin"],
+  "files": ["grammar.js", "src/**", "test/**"],
+  "scripts": {
+    "test": "./test.sh",
+    "generate": "tree-sitter generate"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.27.0"
+  }
+}

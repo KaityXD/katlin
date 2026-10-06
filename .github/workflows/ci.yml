@@ -37,6 +37,12 @@ jobs:
       - name: Test the language server
         run: node editors/vscode/server/test.js
 
+      - name: Install the tree-sitter CLI
+        run: npm install -g tree-sitter-cli
+
+      - name: Test the tree-sitter grammar
+        run: ./grammars/tree-sitter-katlin/test.sh
+
       - name: Check the formatter is idempotent
         run: |
           ./bin/katlin fmt examples/

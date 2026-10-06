@@ -51,14 +51,22 @@ git clone <this-repo> && cd katlin
 
 ### Editor support
 
-`editors/vscode/` ships a language server that publishes `katlin check`
-diagnostics as you type. The server is a dependency-free Node program
-speaking LSP over stdio, so any editor can drive it — VS Code is just the one
-that has a client written here.
+`editors/` ships a language server that publishes `katlin check` diagnostics
+as you type. It is a dependency-free Node program speaking LSP over stdio, so
+any editor can drive it.
 
 ```bash
-node editors/vscode/server/test.js     # 30 tests, drives the real server
+node editors/vscode/server/test.js     # 33 tests, drives the real server
 ```
+
+Two editor integrations are included:
+
+- **VS Code** — `editors/vscode/`, a language client plus the TextMate grammar
+  and snippets.
+- **Zed** — `editors/zed/`, a tree-sitter grammar with highlighting, brackets,
+  indentation and outline queries, plus a Rust extension that launches the
+  same server. Zed cannot read TextMate grammars, which is why it needs its
+  own; see [editors/zed/README.md](editors/zed/README.md).
 
 Front-end errors (`#strict` borrow violations, a missing `fn main`) are placed
 on the exact line. Backend errors report positions in the generated C, so they
@@ -344,7 +352,9 @@ examples/               Working programs; unsupported/ holds the rest
 tests/run_tests.sh      End-to-end tests for the shipped binary
 tests/test_compiler.py  Unit tests for the Python bootstrap
 build.sh                Bootstrap script (./build.sh --verify)
-editors/vscode/         Language server, VS Code client, highlighting, snippets
+editors/vscode/         Language server, VS Code client, TextMate grammar, snippets
+editors/zed/            Zed extension: tree-sitter wiring and queries
+grammars/tree-sitter-katlin/   Tree-sitter grammar for Katlin
 SYNTAX.md               Language reference
 ARCHITECTURE.md         Design notes
 ```

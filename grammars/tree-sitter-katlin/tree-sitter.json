@@ -1,0 +1,17 @@
+{
+  "grammars": [
+    {
+      "name": "katlin",
+      "camelcase": "Katlin",
+      "scope": "source.katlin",
+      "path": ".",
+      "file-types": ["ktl"]
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for the Katlin programming language",
+    "authors": []
+  }
+}
