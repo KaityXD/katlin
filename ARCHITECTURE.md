@@ -63,17 +63,37 @@ fn main {
 }
 ```
 
-The bare-metal dial (`*mut T`, `raw { ... }`, pointer arithmetic) is a design
-target, not a current feature. The only pointer operations that work today are
-address-of `&x`, and dereference reads and writes through a `:=`-inferred
-pointer:
+The bare-metal dial is implemented for the cases that matter:
+
+```katlin
+fn fast_memcpy(*mut byte dest, *const byte src, usize count) {
+    raw {
+        mut usize i = 0;
+        while i < count {
+            *(dest + i) = *(src + i);
+            i += 1;
+        }
+    }
+}
+```
+
+`*mut T` becomes `T*`, `*const T` becomes `const T*`, pointer arithmetic and
+deref-assignment work, and `raw { ... }` is accepted (currently as an ordinary
+block with a marker comment — there are no distinct "raw" semantics to switch
+to yet). See [`examples/pointers.ktl`](examples/pointers.ktl).
+
+Allocation-free pointer work is also available without a `&`-parameter, via
+`alloc_ints` and indexed access:
 
 ```katlin
 fn main {
-    mut int x = 41;
-    mut p := &x;      // __auto_type p = &x;  -> a real int*
-    *p = 99;          // writes through to x
-    println("x = %", x);
+    ptr := alloc_ints(1024);      // int32_t*
+    mut int i = 0;
+    while i < 1024 {
+        ptr[i] = 0;               // index assignment works
+        i += 1;
+    }
+    free_ints(ptr);
 }
 ```
 
@@ -92,12 +112,14 @@ fn main {
 }
 ```
 
-### 3.2 Named Arguments with `=` or `:` — not implemented
+### 3.2 Named Arguments with `=` or `:` — implemented for `=`
 ```katlin
-idkbro(timeout = 10, retries = 3).start();   // C backend error today
-idkbro(timeout: 10, retries: 3).start();
-idkbro(10, 3).start();
+idkbro(timeout = 10, retries = 3);   // named, in any order
+idkbro(10, 3);                       // positional
+idkbro(10);                          // trailing defaults filled in
 ```
+Defaults and named arguments are rewritten into positional form before
+transpilation. The `name: value` colon form is not recognised.
 
 ### 3.3 Printing with Slot `%` — works
 ```katlin

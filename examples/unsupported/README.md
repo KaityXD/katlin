@@ -8,14 +8,19 @@ and because they document where the two implementations diverge.
 They are excluded from `tests/run_tests.sh`, which requires every file in
 `examples/` to build and run.
 
-| Example | Feature it needs | Native support |
+| Example | Feature it still needs | Native support |
 | :--- | :--- | :--- |
-| `idkbro.ktl` | default arguments, named arguments, inner functions + fluent `.start()` chaining | not implemented |
-| `showcase.ktl` | default arguments | not implemented |
-| `phase1_test.ktl` | `or` fallback expressions | not implemented |
+| `idkbro.ktl` | inner functions with scope capture, fluent `.start()` chaining | not implemented |
+| `showcase.ktl` | inner functions with scope capture, fluent `.start()` chaining | not implemented |
+| `phase1_test.ktl` | implicit return of a function's last expression, `match` over enum subjects | not implemented |
 | `strict_module.ktl` | reference struct fields (`int &balance`), member access through `&` parameters | not implemented |
 
-You can still build these with the bootstrap compiler:
+Everything else these files use now works: `idkbro.ktl` and `showcase.ktl`
+get as far as the inner `fn`, and their named arguments and parameter
+defaults are handled correctly.
+
+You can still build these with the bootstrap compiler, which has a full
+parser:
 
 ```bash
 ./bin/katlin_py build examples/unsupported/idkbro.ktl -o /tmp/idkbro
@@ -25,8 +30,11 @@ You can still build these with the bootstrap compiler:
 ## Why not just fix them?
 
 The native compiler transpiles Katlin to C with a character-level scanner
-rather than a full parser, so features that need the shape of an expression —
-inner functions that capture their enclosing scope, `or` fallbacks, argument
-defaults resolved at call sites — cannot be added without redesigning the
-front end around a real AST. That work is tracked in the roadmap in the top
-level `README.md`.
+rather than a full parser. Inner functions need to know which variables the
+enclosing scope declares so they can be captured into a context struct;
+reference struct fields need to know that a member access goes through a
+pointer. Neither can be determined without the shape of an expression, which
+is exactly what a scanner does not have.
+
+That work is tracked as item 1 in the roadmap in the top level
+[`README.md`](../README.md).

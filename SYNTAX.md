@@ -176,13 +176,11 @@ fn load_asset(str path) {
 }
 ```
 
-### Dial 4: `raw` / Bare-Metal Pointers — **not implemented**
+### Dial 4: `raw` / Bare-Metal Pointers
 
-> This section describes intended syntax. `*mut byte` parameter types and
-> `raw { ... }` blocks are **not supported** by the native compiler today; both
-> produce a C backend error. See [README.md](README.md) for what works.
+`*mut T` / `*const T` parameter types, pointer arithmetic and `raw { ... }`
+blocks all work. The documented example compiles as written:
 
-When you need direct VRAM, DMA, inline hardware registers, or SIMD:
 ```katlin
 fn zero_memory(*mut byte ptr, usize size) {
     raw {
@@ -195,7 +193,14 @@ fn zero_memory(*mut byte ptr, usize size) {
 }
 ```
 
-**Working alternative today** — heap buffers with indexed access:
+`byte` maps to `uint8_t` and `usize` to `size_t`. `raw { ... }` is currently
+an ordinary block with a marker comment in the output — there are no distinct
+"raw" semantics to switch to yet, so it is accepted rather than enforced.
+
+See [`examples/pointers.ktl`](examples/pointers.ktl) for a verified
+byte-for-byte copy.
+
+**Working alternative** — heap buffers with indexed access:
 ```katlin
 fn main {
     ptr := alloc_ints(1024);      // int32_t*
@@ -210,13 +215,26 @@ fn main {
 
 ---
 
-## 5. Clean Error Handling with `or` — **not implemented**
+## 5. Clean Error Handling with `or`
 
-> `or` fallback expressions are **not supported** by the native compiler; they
-> produce a C backend error. This is intended syntax.
+`or` provides a fallback when the left-hand side is falsy (zero or null).
+Three forms are supported:
 
 ```katlin
-port := parse_int(env("PORT")) or 8080;
-file := open(path) or return;
-socket := bind(port) or panic("Port unavailable");
+port := parse_int(env("PORT")) or 8080;     // value fallback
+file := open(path) or return;               // early return
+socket := bind(port) or panic("no port");   // abort with a message
+```
+
+The left-hand side is evaluated exactly once. See
+[`examples/fallbacks.ktl`](examples/fallbacks.ktl) for a runnable version.
+
+**Limit:** `or` is rewritten at statement level. An `or` nested inside a call
+argument — `println("%", f() or 1)` — is not rewritten and reports a C
+backend error rather than being handled incorrectly. Bind it to a variable
+first:
+
+```katlin
+value := f() or 1;
+println("%", value);
 ```

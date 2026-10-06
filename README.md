@@ -18,10 +18,13 @@ readable and hackable. It is honest about what works:
 | Compiler | Self-hosted. `bin/katlin` is a native binary built from `compiler/main.ktl` |
 | Backend | Emits C99, compiled with clang `-O3 -flto`. Not a direct machine-code emitter |
 | Core language | Functions, structs, enums, `match`, loops, references, inference — working |
-| Toolchain | `run`, `build`, `test`, `fmt`, `init`, cross-compilation — working |
-| Memory | Arena, vector, string builder, raw heap buffers — working, no GC |
+| Arguments | Default arguments, named arguments, postfix guard clauses — working |
+| Error handling | `or` fallbacks: value default, `or return`, `or panic(...)` — working |
+| Memory | Arena, vector, string builder, raw pointers, `raw` blocks — working, no GC |
+| Toolchain | `run`, `build`, `check`, `test`, `fmt`, `init`, cross-compilation — working |
+| Builds | Incremental; unchanged sources skip clang entirely |
 | `#strict` borrow checking | **Enforced** for aliased `&` borrows and borrows of immutable variables |
-| Advanced syntax | Default/named arguments, inner functions, `or` fallbacks — **not implemented** |
+| Inner functions | Fluent `.start()` chaining — **not implemented** |
 
 See [Feature support](#feature-support) for the full matrix, and
 [`examples/unsupported/`](examples/unsupported/README.md) for programs that
@@ -35,7 +38,11 @@ need the missing features.
 git clone <this-repo> && cd katlin
 
 ./bin/katlin run examples/tour.ktl      # compile and run immediately
+./bin/katlin run examples/pointers.ktl  # raw pointers and raw { } blocks
+./bin/katlin run examples/arguments.ktl # defaults, named args, guards
+./bin/katlin run examples/fallbacks.ktl # `or` fallbacks
 ./bin/katlin build examples/tour.ktl -o /tmp/tour && /tmp/tour
+./bin/katlin check examples/tour.ktl    # type-check only, no binary
 ./bin/katlin test examples/             # run all `test` blocks
 ./bin/katlin fmt examples/              # format sources
 ./bin/katlin init my_project            # scaffold a new project
@@ -46,6 +53,7 @@ git clone <this-repo> && cd katlin
 ```bash
 ./build.sh              # bootstrap via the Python compiler in src/
 ./build.sh --verify     # additionally check the compiler can rebuild itself
+PREFIX=~/.local ./install.sh   # install to <prefix>/bin + <prefix>/lib/katlin/std
 ```
 
 ---
@@ -113,34 +121,44 @@ Verified by `tests/run_tests.sh` against the shipped binary.
 
 - `fn`, `fn main`, return-type annotations, parentheses-optional declarations
 - Inferred typing with `:=`, including compile-time `value.type`
-- Explicit types: `int`, `i64`, `str`, `bool`, `float`, `vec`, `sb`
-- `mut` declarations, both typed (`mut int x = 1`) and inferred (`mut x := 1`)
+- Explicit types: `int`, `i64`, `u64`, `str`, `bool`, `float`, `byte`, `usize`,
+  `vec`, `sb`, `arena`
+- `mut` declarations, typed (`mut int x = 1`) and inferred (`mut x := 1`)
 - `if` / `else`, `while`, `for i in a..b step n`, `loop`
 - Compound assignment (`+=`, `-=`, `*=`, `/=`)
 - `struct` definitions, `Point{ x = 1, y = 2 }` literals, member access
 - `enum` definitions, `Color.Green` variants, `match` with `case .Variant:`
 - Reference parameters (`int &a`) — writes propagate to the caller
 - Address-of `&x` and dereference `*p`, including `*p = value`
+- Raw pointers: `*mut T`, `*const T`, pointer arithmetic, `raw { ... }` blocks
+- Default arguments and named arguments in any order
+- Postfix guard clauses: `return if cond;`
+- `or` fallbacks: `x := f() or 8080`, `or return`, `or panic("...")`
 - `#strict` borrow checking: rejects aliased mutable borrows and borrows of
   immutable variables, with line/column diagnostics (see below)
 - `println` / `print` with `%` placeholders (type-generic, no format guessing)
 - `test "name" { ... }` blocks and the `katlin test` runner
+- `katlin.toml` `opt_level`, read at build time
 - Runtime: arena allocator, dynamic vector, string builder, string helpers,
-  file I/O, CLI args, `min`/`max`/`abs`, timing and RSS measurement
+  file I/O, CLI args, `min`/`max`/`abs`/`hash`, timing and RSS measurement
 - Toolchain flags: `--debug`, `--release`, `--target=<triple>`, `--sysroot=<dir>`
 
 ### Not implemented
 
 | Feature | Behaviour today |
 | :--- | :--- |
-| Default arguments | C backend error |
-| Named arguments | C backend error |
 | Inner functions / fluent `.start()` chaining | C backend error |
-| `or` fallback expressions | C backend error |
 | Reference struct fields (`int &balance`) | C backend error |
+| Member access through a `&` parameter (`from.balance`) | C backend error |
 | Local `int &x = 0` mutability syntax | C backend error |
-| `*mut T` / `*const T` pointer types | C backend error |
-| `raw { ... }` blocks | C backend error |
+| `strict fn` (per-function strict mode) | Not recognised |
+| `or` nested inside a call argument | C backend error |
+| Implicit return of a function's last expression | C backend error |
+| `import` / multi-file projects | Silently ignored |
+
+Inner functions are the significant gap: capturing a closure's environment
+needs to know the shape of the enclosing scope, which the character-level
+front end cannot determine. That is the main item in the roadmap below.
 
 ---
 
@@ -209,8 +227,13 @@ The native compiler scans Katlin source and emits C99, which clang optimises
 with `-O3 -flto -march=native`. `std/katlin_runtime.h` provides the runtime as
 `static inline` C, so the generated program is self-contained.
 
-Two details worth knowing:
+Three details worth knowing:
 
+- **Source-to-source pre-passes.** Named arguments, parameter defaults and
+  `or` fallbacks are rewritten into plain Katlin/C before transpilation, so
+  the character scanner never has to reorder arguments or wrap expressions as
+  it emits them. Anything a pass cannot parse confidently is left untouched
+  rather than guessed at.
 - **Compile-time, not runtime, type info.** `value.type` on a `:=` variable is
   resolved during transpilation and emitted as a string literal.
 - **`%` placeholders are type-generic.** `println("x = %", v)` expands to a
@@ -250,7 +273,7 @@ Reproduce with:
 ## Testing
 
 ```bash
-./tests/run_tests.sh                    # 28 end-to-end tests, shipped binary
+./tests/run_tests.sh                    # 66 end-to-end tests, shipped binary
 python3 -m unittest discover tests/     # 14 unit tests, Python bootstrap
 ```
 
@@ -283,13 +306,17 @@ ARCHITECTURE.md         Design notes
 ## Roadmap
 
 1. Replace the character-level scanner with a real lexer/parser/AST in
-   `compiler/main.ktl`. Most missing features are blocked on this.
+   `compiler/main.ktl`. Inner functions with scope capture, reference struct
+   fields, member access through `&` parameters, and implicit last-expression
+   returns are all blocked on this — they need to know the shape of an
+   expression, which a scanner cannot determine.
 2. Deepen `#strict`: lifetime and move tracking, scope-aware mutability, and
    struct field borrows. Today it covers aliased `&` borrows only.
-3. Argument defaults and named arguments.
-4. Inner functions with scope capture.
-5. Incremental compilation — avoid re-running clang when the generated C is
-   unchanged.
+3. `import` and multi-file projects. Currently `import` is silently skipped.
+4. An LSP so editors get the diagnostics the compiler already produces.
+5. Cross-compilation is wired up (`--target`, `--sysroot`) but untested
+   against a real cross toolchain; add a CI job with one.
+6. Warning infrastructure — the compiler reports errors only.
 
 ---
 

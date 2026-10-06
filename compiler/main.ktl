@@ -159,7 +159,7 @@ fn type_of(str map, str name) -> str {
 // prefixes (`Color.Green`) have to be rewritten here too. Flat enum constants
 // are used in the generated C, matching the statement-level handling.
 fn strip_enum_prefix(str expr, str enum_names) -> str {
-    out := sb_create(256);
+    mut out := sb_create(256);
     n := str_len(expr);
     mut i := 0;
     while i < n {
@@ -413,6 +413,10 @@ fn transpile_source(str src, bool test_mode) -> str {
     // guard becomes `return;` in a void function and `return 0;` otherwise,
     // which keeps the generated C valid in both cases.
     mut cur_void := true;
+
+    // Set by the `mut` handler when the declaration that follows is
+    // `mut name := value`, so the `:=` handler knows to omit `const`.
+    mut pending_inferred_mut := false;
 
     while pos < len {
         c := str_char_at(src, pos);
@@ -721,6 +725,14 @@ fn transpile_source(str src, bool test_mode) -> str {
                 if str_len(first) > 0 && !is_type_word && plain_assign {
                     sb_append(out_buf, "__auto_type ");
                 }
+                // `mut x := 5` is mutable; a bare `x := 5` is not. The
+                // `:=` handler below needs to know which, so that it emits the
+                // same `const` qualifier the Python bootstrap compiler does.
+                if str_len(first) > 0 && !is_type_word {
+                    if mq2 + 1 < len && str_char_at(src, mq2) == 58 && str_char_at(src, mq2 + 1) == 61 {
+                        pending_inferred_mut = true;
+                    }
+                }
                 continue;
             }
 
@@ -728,7 +740,16 @@ fn transpile_source(str src, bool test_mode) -> str {
             mut look := pos;
             while look < len && is_space(str_char_at(src, look)) { look += 1; }
             if look + 1 < len && str_char_at(src, look) == 58 && str_char_at(src, look + 1) == 61 { // ':='
-                sb_append(out_buf, "__auto_type ");
+                // Match the Python bootstrap compiler, which emits `const` for
+                // an inferred declaration that was not written with `mut`.
+                // The two disagreed, so code could self-host here but fail to
+                // bootstrap -- a divergence that hid real errors.
+                if pending_inferred_mut {
+                    sb_append(out_buf, "__auto_type ");
+                } else {
+                    sb_append(out_buf, "const __auto_type ");
+                }
+                pending_inferred_mut = false;
                 sb_append(out_buf, word);
                 sb_append(out_buf, " = ");
                 pos = look + 2;
@@ -1497,9 +1518,9 @@ fn find_top_assign(str s) -> int {
         } else if c == 41 || c == 93 || c == 125 {
             depth -= 1;
         } else if c == 61 && depth == 0 {
-            prev := 0;
+            mut prev := 0;
             if i > 0 { prev = str_char_at(s, i - 1); }
-            next := 0;
+            mut next := 0;
             if i + 1 < n { next = str_char_at(s, i + 1); }
             // reject ==, <=, >=, !=, :=
             if next != 61 && prev != 60 && prev != 62 && prev != 33 && prev != 58 {
@@ -1626,7 +1647,7 @@ fn signature_for(str sigs, str name) -> str {
 
 // Replace field idx of a "|a|b|" list, returning a new list.
 fn set_field(str list, int idx, str value) -> str {
-    out := sb_create(str_len(list) + str_len(value) + 8);
+    mut out := sb_create(str_len(list) + str_len(value) + 8);
     n := str_len(list);
     mut f := 0;
     mut i := 0;
@@ -1715,7 +1736,7 @@ fn positional_args(str sig, str args_text) -> str {
     mut result := sb_create(str_len(args_text) + 64);
     i = 0;
     while i < np {
-        v := field_at(vals, i);
+        mut v := field_at(vals, i);
         if str_len(v) == 0 {
             d := trim_string(field_at(def_list, i));
             if str_len(d) == 0 {
@@ -1738,7 +1759,7 @@ fn rewrite_call_args(str src) -> str {
         return src;
     }
 
-    out := sb_create(str_len(src) + 256);
+    mut out := sb_create(str_len(src) + 256);
     n := str_len(src);
     mut i := 0;
     mut after_fn := false;
@@ -1921,9 +1942,9 @@ fn rewrite_one_or(str stmt) -> str {
             prefix_end = j + 2;
             j += 1;
         } else if d2 == 0 && c == 61 { // '='
-            prev := 0;
+            mut prev := 0;
             if j > 0 { prev = str_char_at(left, j - 1); }
-            next := 0;
+            mut next := 0;
             if j + 1 < ln { next = str_char_at(left, j + 1); }
             if next != 61 && prev != 60 && prev != 62 && prev != 33 && prev != 58 {
                 prefix_end = j + 1;
@@ -1951,7 +1972,7 @@ fn rewrite_one_or(str stmt) -> str {
         return "";
     }
 
-    res := sb_create(str_len(stmt) + 96);
+    mut res := sb_create(str_len(stmt) + 96);
     sb_append(res, prefix);
     if str_eq(right, "return") {
         // The braces matter: the transpiler's `if` handler looks for a `{` to
@@ -1981,8 +2002,8 @@ fn rewrite_or_fallbacks(str src) -> str {
     if !str_contains(src, " or ") {
         return src;
     }
-    out := sb_create(str_len(src) + 128);
-    stmt := sb_create(512);
+    mut out := sb_create(str_len(src) + 128);
+    mut stmt := sb_create(512);
     n := str_len(src);
     mut i := 0;
     mut depth := 0;
